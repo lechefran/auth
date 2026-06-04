@@ -144,10 +144,11 @@ type migrationRecord struct {
 }
 
 type indexSpec struct {
-	Collection string
-	Name       string
-	Keys       bson.D
-	Unique     bool
+	Collection      string
+	Name            string
+	Keys            bson.D
+	Unique          bool
+	SimpleCollation bool
 }
 
 func createIndexes(ctx context.Context, db *mongo.Database) error {
@@ -170,22 +171,25 @@ func createIndexes(ctx context.Context, db *mongo.Database) error {
 func indexSpecs() []indexSpec {
 	return []indexSpec{
 		{
-			Collection: PrincipalsCollection,
-			Name:       "auth_principals_type_id_unique",
-			Keys:       bson.D{{Key: "type", Value: 1}, {Key: "id", Value: 1}},
-			Unique:     true,
+			Collection:      PrincipalsCollection,
+			Name:            "auth_principals_type_id_unique",
+			Keys:            bson.D{{Key: "type", Value: 1}, {Key: "id", Value: 1}},
+			Unique:          true,
+			SimpleCollation: true,
 		},
 		{
-			Collection: APIKeysCollection,
-			Name:       "auth_api_keys_id_unique",
-			Keys:       bson.D{{Key: "id", Value: 1}},
-			Unique:     true,
+			Collection:      APIKeysCollection,
+			Name:            "auth_api_keys_id_unique",
+			Keys:            bson.D{{Key: "id", Value: 1}},
+			Unique:          true,
+			SimpleCollation: true,
 		},
 		{
-			Collection: APIKeysCollection,
-			Name:       "auth_api_keys_prefix_unique",
-			Keys:       bson.D{{Key: "prefix", Value: 1}},
-			Unique:     true,
+			Collection:      APIKeysCollection,
+			Name:            "auth_api_keys_prefix_unique",
+			Keys:            bson.D{{Key: "prefix", Value: 1}},
+			Unique:          true,
+			SimpleCollation: true,
 		},
 		{
 			Collection: APIKeysCollection,
@@ -194,15 +198,17 @@ func indexSpecs() []indexSpec {
 			Unique:     true,
 		},
 		{
-			Collection: APIKeysCollection,
-			Name:       "auth_api_keys_owner_created_id_idx",
-			Keys:       bson.D{{Key: "owner_type", Value: 1}, {Key: "owner_id", Value: 1}, {Key: "created_at", Value: 1}, {Key: "id", Value: 1}},
+			Collection:      APIKeysCollection,
+			Name:            "auth_api_keys_owner_created_id_idx",
+			Keys:            bson.D{{Key: "owner_type", Value: 1}, {Key: "owner_id", Value: 1}, {Key: "created_at", Value: 1}, {Key: "id", Value: 1}},
+			SimpleCollation: true,
 		},
 		{
-			Collection: AuditEventsCollection,
-			Name:       "auth_audit_events_id_unique",
-			Keys:       bson.D{{Key: "id", Value: 1}},
-			Unique:     true,
+			Collection:      AuditEventsCollection,
+			Name:            "auth_audit_events_id_unique",
+			Keys:            bson.D{{Key: "id", Value: 1}},
+			Unique:          true,
+			SimpleCollation: true,
 		},
 		{
 			Collection: AuditEventsCollection,
@@ -216,6 +222,9 @@ func (s indexSpec) model() mongo.IndexModel {
 	opts := options.Index().SetName(s.Name)
 	if s.Unique {
 		opts.SetUnique(true)
+	}
+	if s.SimpleCollation {
+		opts.SetCollation(&options.Collation{Locale: "simple"})
 	}
 	return mongo.IndexModel{
 		Keys:    s.Keys,
