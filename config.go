@@ -18,10 +18,6 @@ const (
 )
 
 // Config controls the core authentication service.
-//
-// Database handles, storage implementations, and key stores are intentionally
-// not part of this first boundary. They will be introduced through narrow
-// interfaces so the core package does not depend on any specific database.
 type Config struct {
 	// Issuer identifies this auth service in generated credentials and audit
 	// records. It must be stable within a deployment.
@@ -39,6 +35,22 @@ type Config struct {
 
 	// SessionTTL is the maximum lifetime for user sessions.
 	SessionTTL time.Duration
+
+	// Users stores account records.
+	Users UserStore
+
+	// Credentials stores password hashes and other credential verifiers.
+	Credentials CredentialStore
+
+	// Sessions stores server-side login sessions.
+	Sessions SessionStore
+
+	// Tokens stores time-bounded token metadata and hashed token lookups.
+	Tokens TokenStore
+
+	// Audit records security-relevant events. Workflows should remain usable
+	// without audit storage only when callers explicitly choose that tradeoff.
+	Audit AuditStore
 }
 
 func normalizeConfig(cfg Config) Config {

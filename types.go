@@ -27,11 +27,41 @@ type Session struct {
 // should persist only derived values such as hashes where appropriate.
 type Token struct {
 	ID        string
+	FamilyID  string
 	Subject   string
 	Issuer    string
+	Hash      []byte
 	IssuedAt  time.Time
 	ExpiresAt time.Time
 	RevokedAt *time.Time
+}
+
+// AuditEventType identifies a security-relevant action or state transition.
+type AuditEventType string
+
+const (
+	AuditEventUserRegistered  AuditEventType = "user.registered"
+	AuditEventLoginSucceeded  AuditEventType = "login.succeeded"
+	AuditEventLoginFailed     AuditEventType = "login.failed"
+	AuditEventLogoutSucceeded AuditEventType = "logout.succeeded"
+	AuditEventTokenRefreshed  AuditEventType = "token.refreshed"
+	AuditEventTokenRevoked    AuditEventType = "token.revoked"
+	AuditEventPasswordChanged AuditEventType = "password.changed"
+)
+
+// AuditEvent is a structured security event.
+//
+// Metadata must not contain secrets, raw tokens, password hashes, credentials,
+// private keys, or sensitive personal data.
+type AuditEvent struct {
+	ID        string
+	Type      AuditEventType
+	ActorID   string
+	SubjectID string
+	SessionID string
+	TokenID   string
+	Occurred  time.Time
+	Metadata  map[string]string
 }
 
 // IsDisabled reports whether the user account is disabled.
