@@ -6,6 +6,7 @@ import (
 
 	"github.com/lechefran/auth"
 	"github.com/lechefran/auth/keys"
+	"github.com/lechefran/auth/migrate"
 	"github.com/lechefran/auth/password"
 	"github.com/lechefran/auth/token"
 )
@@ -56,4 +57,10 @@ func main() {
 	fmt.Printf("session id length: %d\n", len(sessionID))
 	fmt.Printf("session lookup hash bytes: %d\n", len(sessionHash))
 	fmt.Printf("hmac key bytes: %d\n", len(hmacKey))
+
+	planned := []migrate.Migration{
+		{Version: 1, Name: "create_users", SQL: []string{"create table users (...)"}},
+		{Version: 2, Name: "create_sessions", SQL: []string{"create table sessions (...)"}},
+	}
+	fmt.Printf("example migrations planned: %d\n", len(planned))
 }
