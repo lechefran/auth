@@ -80,6 +80,54 @@ func TestMigratePreservesExistingAuthTableData(t *testing.T) {
 	}
 }
 
+func TestMigrateRejectsIncompatibleExistingSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openDB(t, ctx)
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE auth_api_keys (
+		id TEXT PRIMARY KEY,
+		prefix TEXT NOT NULL UNIQUE,
+		owner_type TEXT NOT NULL,
+		owner_id TEXT NOT NULL,
+		hash BLOB NOT NULL,
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create incompatible table error = %v", err)
+	}
+
+	if err := Migrate(ctx, db); !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("Migrate() error = %v, want ErrIncompatibleSchema", err)
+	}
+	applied, err := NewMigrationDriver(db).Applied(ctx)
+	if err != nil {
+		t.Fatalf("Applied() error = %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("applied migrations = %d, want 0", len(applied))
+	}
+}
+
+func TestMigrateRejectsDriftedAppliedSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openDB(t, ctx)
+	defer db.Close()
+
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP INDEX auth_api_keys_owner_created_id_idx`); err != nil {
+		t.Fatalf("drop index error = %v", err)
+	}
+	if err := Migrate(ctx, db); !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("Migrate() after drift error = %v, want ErrIncompatibleSchema", err)
+	}
+}
+
 func TestDeleteDataClearsAuthRowsAndKeepsSchema(t *testing.T) {
 	t.Parallel()
 

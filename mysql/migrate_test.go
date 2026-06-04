@@ -59,6 +59,42 @@ func TestMigrationsCreateIndexesInline(t *testing.T) {
 	}
 }
 
+func TestSchemaValidatorCoversCriticalColumnsAndIndexes(t *testing.T) {
+	t.Parallel()
+
+	columns := make(map[string]bool)
+	for _, column := range expectedColumns() {
+		columns[column.Table+"."+column.Name+":"+column.Type] = true
+	}
+	for _, want := range []string{
+		"auth_api_keys.hash:varbinary",
+		"auth_api_keys.prefix:varchar",
+		"auth_api_keys.scopes:longtext",
+		"auth_audit_events.metadata:longtext",
+	} {
+		if !columns[want] {
+			t.Fatalf("schema validator missing column %q", want)
+		}
+	}
+
+	indexes := make(map[string]expectedIndex)
+	for _, index := range expectedIndexes() {
+		indexes[index.Table+"."+index.Name] = index
+	}
+	for _, name := range []string{
+		"auth_api_keys.auth_api_keys_prefix_unique",
+		"auth_api_keys.auth_api_keys_hash_unique",
+		"auth_api_keys.auth_api_keys_owner_created_id_idx",
+	} {
+		if _, ok := indexes[name]; !ok {
+			t.Fatalf("schema validator missing index %q", name)
+		}
+	}
+	if !indexes["auth_api_keys.auth_api_keys_hash_unique"].Unique {
+		t.Fatal("hash index must be unique")
+	}
+}
+
 func TestParseTime(t *testing.T) {
 	t.Parallel()
 

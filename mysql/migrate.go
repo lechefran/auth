@@ -3,13 +3,19 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lechefran/auth/migrate"
 )
 
 const dateTimeLayout = "2006-01-02 15:04:05.999999"
+
+// ErrIncompatibleSchema reports an existing auth schema that cannot safely be
+// used by the MySQL/MariaDB adapter.
+var ErrIncompatibleSchema = errors.New("mysql: incompatible schema")
 
 // Migrations returns the MySQL/MariaDB schema migrations for the auth adapter.
 func Migrations() []migrate.Migration {
@@ -71,8 +77,16 @@ func Migrations() []migrate.Migration {
 
 // Migrate applies pending MySQL/MariaDB migrations.
 func Migrate(ctx context.Context, db *sql.DB) error {
-	_, err := migrate.ApplyPending(ctx, NewMigrationDriver(db), Migrations())
-	return err
+	if _, err := migrate.ApplyPending(ctx, NewMigrationDriver(db), Migrations()); err != nil {
+		return err
+	}
+	return ValidateSchema(ctx, db)
+}
+
+// ValidateSchema verifies that existing auth tables and indexes are compatible
+// with the MySQL/MariaDB adapter.
+func ValidateSchema(ctx context.Context, db *sql.DB) error {
+	return validateSchema(ctx, db)
 }
 
 // DeleteData deletes all auth adapter data while keeping the MySQL/MariaDB schema.
@@ -157,6 +171,9 @@ func (d *MigrationDriver) Apply(ctx context.Context, migration migrate.Migration
 			return fmt.Errorf("execute statement: %w", err)
 		}
 	}
+	if err := validateSchema(ctx, d.db); err != nil {
+		return err
+	}
 	_, err := d.db.ExecContext(
 		ctx,
 		`INSERT INTO auth_schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`,
@@ -187,4 +204,200 @@ func parseTimeString(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("parse time %q", value)
+}
+
+type schemaRunner interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+type expectedColumn struct {
+	Table   string
+	Name    string
+	Type    string
+	NotNull bool
+}
+
+type expectedIndex struct {
+	Table   string
+	Name    string
+	Columns []string
+	Unique  bool
+}
+
+type actualColumn struct {
+	Type    string
+	NotNull bool
+}
+
+type actualIndex struct {
+	Unique  bool
+	Columns []string
+}
+
+func validateSchema(ctx context.Context, runner schemaRunner) error {
+	columns, err := loadColumns(ctx, runner)
+	if err != nil {
+		return err
+	}
+	for _, want := range expectedColumns() {
+		tableColumns := columns[want.Table]
+		if len(tableColumns) == 0 {
+			return errors.Join(ErrIncompatibleSchema, fmt.Errorf("missing table %s", want.Table))
+		}
+		got, ok := tableColumns[want.Name]
+		if !ok {
+			return errors.Join(ErrIncompatibleSchema, fmt.Errorf("missing column %s.%s", want.Table, want.Name))
+		}
+		if got.Type != want.Type {
+			return errors.Join(ErrIncompatibleSchema, fmt.Errorf("column %s.%s type = %q, want %q", want.Table, want.Name, got.Type, want.Type))
+		}
+		if want.NotNull && !got.NotNull {
+			return errors.Join(ErrIncompatibleSchema, fmt.Errorf("column %s.%s must be NOT NULL", want.Table, want.Name))
+		}
+	}
+
+	indexes, err := loadIndexes(ctx, runner)
+	if err != nil {
+		return err
+	}
+	for _, want := range expectedIndexes() {
+		got, ok := indexes[want.Table][want.Name]
+		if !ok {
+			return errors.Join(ErrIncompatibleSchema, fmt.Errorf("missing index %s.%s", want.Table, want.Name))
+		}
+		if want.Unique && !got.Unique {
+			return errors.Join(ErrIncompatibleSchema, fmt.Errorf("index %s.%s must be unique", want.Table, want.Name))
+		}
+		if !equalStrings(got.Columns, want.Columns) {
+			return errors.Join(ErrIncompatibleSchema, fmt.Errorf("index %s.%s columns = %v, want %v", want.Table, want.Name, got.Columns, want.Columns))
+		}
+	}
+	return nil
+}
+
+func loadColumns(ctx context.Context, runner schemaRunner) (map[string]map[string]actualColumn, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT table_name, column_name, data_type, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE()
+			AND table_name IN ('auth_schema_migrations', 'auth_principals', 'auth_api_keys', 'auth_audit_events')`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect columns: %w", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]map[string]actualColumn)
+	for rows.Next() {
+		var table string
+		var name string
+		var dataType string
+		var nullable string
+		if err := rows.Scan(&table, &name, &dataType, &nullable); err != nil {
+			return nil, fmt.Errorf("scan columns: %w", err)
+		}
+		if columns[table] == nil {
+			columns[table] = make(map[string]actualColumn)
+		}
+		columns[table][name] = actualColumn{
+			Type:    strings.ToLower(dataType),
+			NotNull: strings.EqualFold(nullable, "NO"),
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("inspect columns: %w", err)
+	}
+	return columns, nil
+}
+
+func loadIndexes(ctx context.Context, runner schemaRunner) (map[string]map[string]actualIndex, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT table_name, index_name, non_unique, seq_in_index, column_name
+		FROM information_schema.statistics
+		WHERE table_schema = DATABASE()
+			AND table_name IN ('auth_schema_migrations', 'auth_principals', 'auth_api_keys', 'auth_audit_events')
+		ORDER BY table_name, index_name, seq_in_index`)
+	if err != nil {
+		return nil, fmt.Errorf("inspect indexes: %w", err)
+	}
+	defer rows.Close()
+
+	indexes := make(map[string]map[string]actualIndex)
+	for rows.Next() {
+		var table string
+		var name string
+		var nonUnique int
+		var seq int
+		var column string
+		if err := rows.Scan(&table, &name, &nonUnique, &seq, &column); err != nil {
+			return nil, fmt.Errorf("scan indexes: %w", err)
+		}
+		if indexes[table] == nil {
+			indexes[table] = make(map[string]actualIndex)
+		}
+		index := indexes[table][name]
+		index.Unique = nonUnique == 0
+		index.Columns = append(index.Columns, column)
+		indexes[table][name] = index
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("inspect indexes: %w", err)
+	}
+	return indexes, nil
+}
+
+func expectedColumns() []expectedColumn {
+	return []expectedColumn{
+		{Table: "auth_schema_migrations", Name: "version", Type: "bigint", NotNull: true},
+		{Table: "auth_schema_migrations", Name: "name", Type: "varchar", NotNull: true},
+		{Table: "auth_schema_migrations", Name: "applied_at", Type: "datetime", NotNull: true},
+		{Table: "auth_principals", Name: "type", Type: "varchar", NotNull: true},
+		{Table: "auth_principals", Name: "id", Type: "varchar", NotNull: true},
+		{Table: "auth_principals", Name: "name", Type: "varchar", NotNull: true},
+		{Table: "auth_principals", Name: "created_at", Type: "datetime", NotNull: true},
+		{Table: "auth_principals", Name: "updated_at", Type: "datetime", NotNull: true},
+		{Table: "auth_principals", Name: "disabled_at", Type: "datetime"},
+		{Table: "auth_api_keys", Name: "id", Type: "varchar", NotNull: true},
+		{Table: "auth_api_keys", Name: "issuer", Type: "varchar", NotNull: true},
+		{Table: "auth_api_keys", Name: "prefix", Type: "varchar", NotNull: true},
+		{Table: "auth_api_keys", Name: "name", Type: "varchar", NotNull: true},
+		{Table: "auth_api_keys", Name: "owner_type", Type: "varchar", NotNull: true},
+		{Table: "auth_api_keys", Name: "owner_id", Type: "varchar", NotNull: true},
+		{Table: "auth_api_keys", Name: "hash", Type: "varbinary", NotNull: true},
+		{Table: "auth_api_keys", Name: "scopes", Type: "longtext", NotNull: true},
+		{Table: "auth_api_keys", Name: "created_at", Type: "datetime", NotNull: true},
+		{Table: "auth_api_keys", Name: "expires_at", Type: "datetime"},
+		{Table: "auth_api_keys", Name: "revoked_at", Type: "datetime"},
+		{Table: "auth_api_keys", Name: "last_used_at", Type: "datetime"},
+		{Table: "auth_audit_events", Name: "id", Type: "varchar", NotNull: true},
+		{Table: "auth_audit_events", Name: "type", Type: "varchar", NotNull: true},
+		{Table: "auth_audit_events", Name: "actor_id", Type: "varchar", NotNull: true},
+		{Table: "auth_audit_events", Name: "principal_type", Type: "varchar", NotNull: true},
+		{Table: "auth_audit_events", Name: "principal_id", Type: "varchar", NotNull: true},
+		{Table: "auth_audit_events", Name: "api_key_id", Type: "varchar", NotNull: true},
+		{Table: "auth_audit_events", Name: "occurred", Type: "datetime", NotNull: true},
+		{Table: "auth_audit_events", Name: "metadata", Type: "longtext", NotNull: true},
+	}
+}
+
+func expectedIndexes() []expectedIndex {
+	return []expectedIndex{
+		{Table: "auth_schema_migrations", Name: "PRIMARY", Columns: []string{"version"}, Unique: true},
+		{Table: "auth_principals", Name: "PRIMARY", Columns: []string{"type", "id"}, Unique: true},
+		{Table: "auth_api_keys", Name: "PRIMARY", Columns: []string{"id"}, Unique: true},
+		{Table: "auth_api_keys", Name: "auth_api_keys_prefix_unique", Columns: []string{"prefix"}, Unique: true},
+		{Table: "auth_api_keys", Name: "auth_api_keys_hash_unique", Columns: []string{"hash"}, Unique: true},
+		{Table: "auth_api_keys", Name: "auth_api_keys_owner_created_id_idx", Columns: []string{"owner_type", "owner_id", "created_at", "id"}},
+		{Table: "auth_audit_events", Name: "PRIMARY", Columns: []string{"id"}, Unique: true},
+		{Table: "auth_audit_events", Name: "auth_audit_events_occurred_idx", Columns: []string{"occurred"}},
+	}
+}
+
+func equalStrings(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
