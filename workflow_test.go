@@ -121,6 +121,29 @@ func TestCreateAPIKeyRollsBackWhenAtomicAuditFails(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKeyUsesBestEffortAuditWhenAuditStoreDiffers(t *testing.T) {
+	t.Parallel()
+
+	service, apiKeyStore := newAtomicTestService(t)
+	auditStore := newMemoryStore()
+	auditStore.auditErr = errors.New("separate audit unavailable")
+	service.cfg.Audit = auditStore
+
+	result, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	if _, ok := apiKeyStore.apiKeys[result.APIKey.ID]; !ok {
+		t.Fatal("CreateAPIKey() did not store API key")
+	}
+	if apiKeyStore.atomicCreates != 0 {
+		t.Fatalf("atomic creates = %d, want 0", apiKeyStore.atomicCreates)
+	}
+}
+
 func TestCreateAPIKeyRejectsMissingPrincipal(t *testing.T) {
 	t.Parallel()
 
@@ -305,7 +328,7 @@ func TestVerifyAPIKeyRejectsWrongSecret(t *testing.T) {
 func TestVerifyAPIKeyRejectsMissingScope(t *testing.T) {
 	t.Parallel()
 
-	service, _ := newTestService(t)
+	service, store := newTestService(t)
 	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
 		OwnerType: PrincipalTypeGroup,
 		OwnerID:   "group_123",
@@ -321,6 +344,16 @@ func TestVerifyAPIKeyRejectsMissingScope(t *testing.T) {
 	})
 	if !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("VerifyAPIKey() error = %v, want ErrPermissionDenied", err)
+	}
+	event := store.lastAuditEvent(AuditEventAPIKeyVerificationFailed)
+	if event == nil {
+		t.Fatal("VerifyAPIKey() did not audit missing scope")
+	}
+	if event.APIKeyID != created.APIKey.ID || event.PrincipalID != "group_123" || event.PrincipalType != PrincipalTypeGroup {
+		t.Fatalf("audit event = %+v, want key/principal metadata", *event)
+	}
+	if event.Metadata["reason"] != "missing_scope" || event.Metadata["prefix"] != created.APIKey.Prefix {
+		t.Fatalf("audit metadata = %+v, want missing_scope reason and key prefix", event.Metadata)
 	}
 }
 
@@ -429,6 +462,34 @@ func TestRevokeAPIKeyRollsBackWhenAtomicAuditFails(t *testing.T) {
 	}
 	if store.atomicRevokes != 1 {
 		t.Fatalf("atomic revokes = %d, want 1", store.atomicRevokes)
+	}
+}
+
+func TestRevokeAPIKeyUsesBestEffortAuditWhenAuditStoreDiffers(t *testing.T) {
+	t.Parallel()
+
+	service, apiKeyStore := newAtomicTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	apiKeyStore.atomicCreates = 0
+
+	auditStore := newMemoryStore()
+	auditStore.auditErr = errors.New("separate audit unavailable")
+	service.cfg.Audit = auditStore
+
+	if err := service.RevokeAPIKey(context.Background(), RevokeAPIKeyRequest{APIKeyID: created.APIKey.ID}); err != nil {
+		t.Fatalf("RevokeAPIKey() error = %v", err)
+	}
+	if apiKeyStore.apiKeys[created.APIKey.ID].RevokedAt == nil {
+		t.Fatal("RevokeAPIKey() did not revoke key")
+	}
+	if apiKeyStore.atomicRevokes != 0 {
+		t.Fatalf("atomic revokes = %d, want 0", apiKeyStore.atomicRevokes)
 	}
 }
 
@@ -773,6 +834,15 @@ func (s *memoryStore) auditCount(eventType AuditEventType) int {
 		}
 	}
 	return count
+}
+
+func (s *memoryStore) lastAuditEvent(eventType AuditEventType) *AuditEvent {
+	for i := len(s.audit) - 1; i >= 0; i-- {
+		if s.audit[i].Type == eventType {
+			return &s.audit[i]
+		}
+	}
+	return nil
 }
 
 type atomicMemoryStore struct {

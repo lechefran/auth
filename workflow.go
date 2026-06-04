@@ -194,6 +194,10 @@ func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (Ve
 		return VerifyAPIKeyResult{}, ErrInvalidCredentials
 	}
 	if !hasRequiredScopes(apiKey.Scopes, requiredScopes) {
+		_ = s.recordAudit(ctx, AuditEventAPIKeyVerificationFailed, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, map[string]string{
+			"prefix": prefix,
+			"reason": "missing_scope",
+		})
 		return VerifyAPIKeyResult{}, ErrPermissionDenied
 	}
 
