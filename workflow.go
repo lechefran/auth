@@ -195,10 +195,9 @@ func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (Ve
 		return VerifyAPIKeyResult{}, ErrDisabledPrincipal
 	}
 
-	if err := s.cfg.APIKeys.TouchAPIKey(ctx, apiKey.ID, now); err != nil {
-		return VerifyAPIKeyResult{}, err
+	if err := s.cfg.APIKeys.TouchAPIKey(ctx, apiKey.ID, now); err == nil {
+		apiKey.LastUsedAt = &now
 	}
-	apiKey.LastUsedAt = &now
 	_ = s.recordAudit(ctx, AuditEventAPIKeyVerified, principal.ID, apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
 
 	return VerifyAPIKeyResult{APIKey: publicAPIKey(apiKey), Principal: principal}, nil

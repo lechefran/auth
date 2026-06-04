@@ -215,6 +215,31 @@ func TestVerifyAPIKeySucceedsWhenAuditFails(t *testing.T) {
 	}
 }
 
+func TestVerifyAPIKeySucceedsWhenTouchFails(t *testing.T) {
+	t.Parallel()
+
+	service, store := newTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	store.touchErr = errors.New("last-used write unavailable")
+	verified, err := service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{RawKey: created.RawKey})
+	if err != nil {
+		t.Fatalf("VerifyAPIKey() error = %v", err)
+	}
+	if verified.APIKey.ID != created.APIKey.ID {
+		t.Fatalf("VerifyAPIKey() ID = %q, want %q", verified.APIKey.ID, created.APIKey.ID)
+	}
+	if verified.APIKey.LastUsedAt != nil {
+		t.Fatal("VerifyAPIKey() returned LastUsedAt after touch failure")
+	}
+}
+
 func TestVerifyAPIKeyRejectsWrongSecret(t *testing.T) {
 	t.Parallel()
 
@@ -440,6 +465,7 @@ type memoryStore struct {
 	byPrefix   map[string]string
 	audit      []AuditEvent
 	auditErr   error
+	touchErr   error
 }
 
 func newMemoryStore() *memoryStore {
@@ -510,6 +536,9 @@ func (s *memoryStore) RevokeAPIKey(_ context.Context, keyID string, revokedAt ti
 }
 
 func (s *memoryStore) TouchAPIKey(_ context.Context, keyID string, usedAt time.Time) error {
+	if s.touchErr != nil {
+		return s.touchErr
+	}
 	key, ok := s.apiKeys[keyID]
 	if !ok {
 		return ErrNotFound

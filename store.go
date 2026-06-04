@@ -34,8 +34,9 @@ type APIKeyStore interface {
 	// ErrInvalidState when the key cannot be revoked.
 	RevokeAPIKey(ctx context.Context, keyID string, revokedAt time.Time) error
 
-	// TouchAPIKey records successful use. It returns ErrNotFound when keyID does
-	// not exist.
+	// TouchAPIKey records successful use. The core service treats this as
+	// best-effort metadata and does not fail verification when it returns an
+	// error.
 	TouchAPIKey(ctx context.Context, keyID string, usedAt time.Time) error
 }
 

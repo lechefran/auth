@@ -48,9 +48,9 @@ type Config struct {
 	// APIKeys stores API key metadata and lookup hashes.
 	APIKeys APIKeyStore
 
-	// Audit records security-relevant events. Audit writes are best-effort for
-	// completed workflows so audit storage failures do not orphan newly created
-	// API keys or mask successful revocations.
+	// Audit records security-relevant events. Audit writes and last-used updates
+	// are best-effort for completed workflows so metadata storage failures do
+	// not orphan newly created API keys or deny otherwise valid keys.
 	Audit AuditStore
 }
 
