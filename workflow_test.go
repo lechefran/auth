@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lechefran/auth/token"
 )
 
 func TestCreateAPIKeyStoresHashAndReturnsRawKeyOnce(t *testing.T) {
@@ -38,6 +40,13 @@ func TestCreateAPIKeyStoresHashAndReturnsRawKeyOnce(t *testing.T) {
 	}
 	if bytes.Contains(stored.Hash, []byte(result.RawKey)) {
 		t.Fatal("stored hash contains raw key material")
+	}
+	plainHash, err := token.LookupHash(result.RawKey)
+	if err != nil {
+		t.Fatalf("LookupHash() error = %v", err)
+	}
+	if bytes.Equal(stored.Hash, plainHash) {
+		t.Fatal("stored hash used unkeyed sha256 lookup hash")
 	}
 	if len(result.APIKey.Scopes) != 2 {
 		t.Fatalf("Scopes = %v, want normalized unique scopes", result.APIKey.Scopes)
@@ -341,16 +350,21 @@ func newTestService(t *testing.T) (*Service, *memoryStore) {
 	}
 
 	service, err := New(Config{
-		Issuer:     "test-issuer",
-		Clock:      fixedClock{now: now},
-		Principals: store,
-		APIKeys:    store,
-		Audit:      store,
+		Issuer:          "test-issuer",
+		Clock:           fixedClock{now: now},
+		Principals:      store,
+		APIKeys:         store,
+		APIKeyLookupKey: testLookupKey(),
+		Audit:           store,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	return service, store
+}
+
+func testLookupKey() []byte {
+	return []byte("01234567890123456789012345678901")
 }
 
 type memoryStore struct {

@@ -88,7 +88,7 @@ func TestHMACLookupHash(t *testing.T) {
 func TestHMACLookupHashRejectsWeakKey(t *testing.T) {
 	t.Parallel()
 
-	_, err := HMACLookupHash("token-one", []byte("short"))
+	_, err := HMACLookupHash("token-one", make([]byte, MinLookupKeyBytes-1))
 	if !errors.Is(err, ErrWeakLookupKey) {
 		t.Fatalf("HMACLookupHash() error = %v, want ErrWeakLookupKey", err)
 	}

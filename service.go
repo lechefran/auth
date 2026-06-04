@@ -6,7 +6,8 @@ package auth
 // storage interfaces to Config and implement workflows against those
 // interfaces.
 type Service struct {
-	cfg Config
+	cfg             Config
+	apiKeyLookupKey []byte
 }
 
 // New creates a Service with secure defaults for omitted optional settings.
@@ -15,7 +16,10 @@ func New(cfg Config) (*Service, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg}, nil
+
+	apiKeyLookupKey := append([]byte(nil), cfg.APIKeyLookupKey...)
+	cfg.APIKeyLookupKey = nil
+	return &Service{cfg: cfg, apiKeyLookupKey: apiKeyLookupKey}, nil
 }
 
 // Config returns the normalized service configuration.

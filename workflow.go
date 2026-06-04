@@ -103,7 +103,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (Cr
 
 	prefix := s.cfg.KeyPrefix + "_" + publicID
 	rawKey := prefix + "." + secret
-	hash, err := token.LookupHash(rawKey)
+	hash, err := s.lookupAPIKeyHash(rawKey)
 	if err != nil {
 		return CreateAPIKeyResult{}, err
 	}
@@ -168,7 +168,7 @@ func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (Ve
 		return VerifyAPIKeyResult{}, err
 	}
 
-	hash, err := token.LookupHash(rawKey)
+	hash, err := s.lookupAPIKeyHash(rawKey)
 	if err != nil {
 		return VerifyAPIKeyResult{}, err
 	}
@@ -276,6 +276,10 @@ func (s *Service) requireStores(stores ...interface{}) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) lookupAPIKeyHash(rawKey string) ([]byte, error) {
+	return token.HMACLookupHash(rawKey, s.apiKeyLookupKey)
 }
 
 func validatePrincipalRef(principalType PrincipalType, principalID string) error {

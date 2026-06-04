@@ -34,6 +34,30 @@ func TestNewAppliesSecureDefaults(t *testing.T) {
 	}
 }
 
+func TestNewKeepsAPIKeyLookupKeyPrivate(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryStore()
+	lookupKey := testLookupKey()
+	service, err := New(Config{
+		Issuer:          "test-issuer",
+		Principals:      store,
+		APIKeys:         store,
+		APIKeyLookupKey: lookupKey,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	lookupKey[0] ^= 0xff
+
+	if service.apiKeyLookupKey[0] == lookupKey[0] {
+		t.Fatal("New() retained caller-owned api key lookup key slice")
+	}
+	if service.Config().APIKeyLookupKey != nil {
+		t.Fatal("Config() exposed api key lookup key")
+	}
+}
+
 func TestNewRejectsInvalidConfig(t *testing.T) {
 	t.Parallel()
 
@@ -57,6 +81,21 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 			cfg: Config{
 				Issuer:    "test-issuer",
 				APIKeyTTL: -time.Second,
+			},
+		},
+		{
+			name: "api key store without lookup key",
+			cfg: Config{
+				Issuer:  "test-issuer",
+				APIKeys: compileAPIKeyStore{},
+			},
+		},
+		{
+			name: "weak lookup key",
+			cfg: Config{
+				Issuer:          "test-issuer",
+				APIKeys:         compileAPIKeyStore{},
+				APIKeyLookupKey: []byte("short"),
 			},
 		},
 	}

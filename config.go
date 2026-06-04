@@ -3,6 +3,8 @@ package auth
 import (
 	"errors"
 	"time"
+
+	"github.com/lechefran/auth/token"
 )
 
 var (
@@ -27,13 +29,18 @@ type Config struct {
 	// used when this is nil.
 	Clock Clock
 
-	// KeyPrefix is the public prefix used in generated API keys. It must not
-	// contain whitespace, underscores, or periods.
+	// KeyPrefix is the public prefix used in generated API keys. It may contain
+	// ASCII letters, digits, and hyphens.
 	KeyPrefix string
 
 	// APIKeyTTL is the default lifetime for generated API keys when callers do
 	// not provide an explicit expiration.
 	APIKeyTTL time.Duration
+
+	// APIKeyLookupKey is the application-controlled HMAC key used to hash API
+	// keys before storage. It is required when APIKeys is configured and must
+	// come from secret management, not source code.
+	APIKeyLookupKey []byte
 
 	// Principals stores users and groups that can own API keys.
 	Principals PrincipalStore
@@ -77,6 +84,9 @@ func validateConfig(cfg Config) error {
 	}
 	if cfg.APIKeyTTL <= 0 {
 		return errors.Join(ErrInvalidConfig, errors.New("api key ttl must be positive"))
+	}
+	if cfg.APIKeys != nil && len(cfg.APIKeyLookupKey) < token.MinLookupKeyBytes {
+		return errors.Join(ErrInvalidConfig, token.ErrWeakLookupKey)
 	}
 	return nil
 }

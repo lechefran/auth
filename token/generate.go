@@ -14,7 +14,10 @@ const (
 	defaultSecretBytes   = 32
 	defaultPublicIDBytes = 16
 	minTokenBytes        = 16
-	minLookupKeyBytes    = 32
+
+	// MinLookupKeyBytes is the minimum application-controlled HMAC key length
+	// for token lookup hashes.
+	MinLookupKeyBytes = 32
 )
 
 var (
@@ -72,8 +75,8 @@ func HMACLookupHash(value string, key []byte) ([]byte, error) {
 	if value == "" {
 		return nil, ErrEmptyToken
 	}
-	if len(key) < minLookupKeyBytes {
-		return nil, errors.Join(ErrWeakLookupKey, fmt.Errorf("key must be at least %d bytes", minLookupKeyBytes))
+	if len(key) < MinLookupKeyBytes {
+		return nil, errors.Join(ErrWeakLookupKey, fmt.Errorf("key must be at least %d bytes", MinLookupKeyBytes))
 	}
 
 	mac := hmac.New(sha256.New, key)

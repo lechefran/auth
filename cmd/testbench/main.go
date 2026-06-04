@@ -30,14 +30,14 @@ func main() {
 		log.Fatalf("generate api key secret: %v", err)
 	}
 
-	secretHash, err := token.LookupHash(secret)
-	if err != nil {
-		log.Fatalf("hash api key secret: %v", err)
-	}
-
 	hmacKey, err := keys.GenerateHMACKey()
 	if err != nil {
 		log.Fatalf("generate hmac key: %v", err)
+	}
+
+	secretHash, err := token.HMACLookupHash(secret, hmacKey)
+	if err != nil {
+		log.Fatalf("hash api key secret: %v", err)
 	}
 
 	fmt.Printf("api key secret length: %d\n", len(secret))
@@ -46,10 +46,11 @@ func main() {
 
 	store := newMemoryStore()
 	service, err = auth.New(auth.Config{
-		Issuer:     "auth-testbench",
-		Principals: store,
-		APIKeys:    store,
-		Audit:      store,
+		Issuer:          "auth-testbench",
+		Principals:      store,
+		APIKeys:         store,
+		APIKeyLookupKey: hmacKey,
+		Audit:           store,
 	})
 	if err != nil {
 		log.Fatalf("create api key service: %v", err)
