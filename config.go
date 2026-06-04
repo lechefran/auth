@@ -3,8 +3,6 @@ package auth
 import (
 	"errors"
 	"time"
-
-	"github.com/lechefran/auth/password"
 )
 
 var (
@@ -14,9 +12,8 @@ var (
 )
 
 const (
-	defaultAccessTokenTTL  = 15 * time.Minute
-	defaultRefreshTokenTTL = 30 * 24 * time.Hour
-	defaultSessionTTL      = 24 * time.Hour
+	defaultAPIKeyTTL = 90 * 24 * time.Hour
+	defaultKeyPrefix = "ak"
 )
 
 // Config controls the core authentication service.
@@ -29,30 +26,19 @@ type Config struct {
 	// used when this is nil.
 	Clock Clock
 
-	// AccessTokenTTL is the lifetime for short-lived access tokens.
-	AccessTokenTTL time.Duration
+	// KeyPrefix is the public prefix used in generated API keys. It must not
+	// contain whitespace, underscores, or periods.
+	KeyPrefix string
 
-	// RefreshTokenTTL is the maximum lifetime for refresh tokens.
-	RefreshTokenTTL time.Duration
+	// APIKeyTTL is the default lifetime for generated API keys when callers do
+	// not provide an explicit expiration.
+	APIKeyTTL time.Duration
 
-	// SessionTTL is the maximum lifetime for user sessions.
-	SessionTTL time.Duration
+	// Principals stores users and groups that can own API keys.
+	Principals PrincipalStore
 
-	// Passwords hashes and verifies password credentials. Argon2id defaults are
-	// used when this is nil.
-	Passwords PasswordHasher
-
-	// Users stores account records.
-	Users UserStore
-
-	// Credentials stores password hashes and other credential verifiers.
-	Credentials CredentialStore
-
-	// Sessions stores server-side login sessions.
-	Sessions SessionStore
-
-	// Tokens stores time-bounded token metadata and hashed token lookups.
-	Tokens TokenStore
+	// APIKeys stores API key metadata and lookup hashes.
+	APIKeys APIKeyStore
 
 	// Audit records security-relevant events. Workflows should remain usable
 	// without audit storage only when callers explicitly choose that tradeoff.
@@ -63,17 +49,11 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.Clock == nil {
 		cfg.Clock = systemClock{}
 	}
-	if cfg.AccessTokenTTL == 0 {
-		cfg.AccessTokenTTL = defaultAccessTokenTTL
+	if cfg.KeyPrefix == "" {
+		cfg.KeyPrefix = defaultKeyPrefix
 	}
-	if cfg.RefreshTokenTTL == 0 {
-		cfg.RefreshTokenTTL = defaultRefreshTokenTTL
-	}
-	if cfg.SessionTTL == 0 {
-		cfg.SessionTTL = defaultSessionTTL
-	}
-	if cfg.Passwords == nil {
-		cfg.Passwords = password.Argon2id()
+	if cfg.APIKeyTTL == 0 {
+		cfg.APIKeyTTL = defaultAPIKeyTTL
 	}
 	return cfg
 }
@@ -85,23 +65,23 @@ func validateConfig(cfg Config) error {
 	if cfg.Clock == nil {
 		return errors.Join(ErrInvalidConfig, errors.New("clock is required"))
 	}
-	if cfg.AccessTokenTTL <= 0 {
-		return errors.Join(ErrInvalidConfig, errors.New("access token ttl must be positive"))
+	if cfg.KeyPrefix == "" {
+		return errors.Join(ErrInvalidConfig, errors.New("key prefix is required"))
 	}
-	if cfg.RefreshTokenTTL <= 0 {
-		return errors.Join(ErrInvalidConfig, errors.New("refresh token ttl must be positive"))
+	if containsKeyDelimiter(cfg.KeyPrefix) {
+		return errors.Join(ErrInvalidConfig, errors.New("key prefix contains a reserved delimiter"))
 	}
-	if cfg.SessionTTL <= 0 {
-		return errors.Join(ErrInvalidConfig, errors.New("session ttl must be positive"))
-	}
-	if cfg.Passwords == nil {
-		return errors.Join(ErrInvalidConfig, errors.New("password hasher is required"))
-	}
-	if cfg.AccessTokenTTL >= cfg.RefreshTokenTTL {
-		return errors.Join(ErrInvalidConfig, errors.New("access token ttl must be shorter than refresh token ttl"))
-	}
-	if cfg.SessionTTL > cfg.RefreshTokenTTL {
-		return errors.Join(ErrInvalidConfig, errors.New("session ttl must not exceed refresh token ttl"))
+	if cfg.APIKeyTTL <= 0 {
+		return errors.Join(ErrInvalidConfig, errors.New("api key ttl must be positive"))
 	}
 	return nil
+}
+
+func containsKeyDelimiter(value string) bool {
+	for _, r := range value {
+		if r == '_' || r == '.' || r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			return true
+		}
+	}
+	return false
 }

@@ -4,220 +4,255 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/lechefran/auth/password"
 )
 
-func TestRegisterCreatesUserAndPasswordHash(t *testing.T) {
+func TestCreateAPIKeyStoresHashAndReturnsRawKeyOnce(t *testing.T) {
 	t.Parallel()
 
 	service, store := newTestService(t)
-	result, err := service.Register(context.Background(), RegisterRequest{
-		Email:       " USER@example.COM ",
-		DisplayName: " Test User ",
-		Password:    []byte("correct horse battery staple"),
+	result, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Name:      "CI key",
+		Scopes:    []string{"cards:read", "cards:read", " cards:write "},
 	})
 	if err != nil {
-		t.Fatalf("Register() error = %v", err)
+		t.Fatalf("CreateAPIKey() error = %v", err)
 	}
 
-	if result.User.Email != "user@example.com" {
-		t.Fatalf("Register() email = %q, want normalized email", result.User.Email)
+	if result.RawKey == "" {
+		t.Fatal("CreateAPIKey() returned empty raw key")
 	}
-	if len(store.passwordHashes[result.User.ID]) == 0 {
-		t.Fatal("Register() did not store password hash")
+	if !strings.HasPrefix(result.RawKey, result.APIKey.Prefix+".") {
+		t.Fatalf("RawKey = %q, want prefix %q", result.RawKey, result.APIKey.Prefix+".")
 	}
-	if store.auditCount(AuditEventUserRegistered) != 1 {
-		t.Fatal("Register() did not record user registration audit event")
+	if bytes.Contains(result.APIKey.Hash, []byte(result.RawKey)) {
+		t.Fatal("stored hash contains raw key material")
+	}
+	if len(result.APIKey.Scopes) != 2 {
+		t.Fatalf("Scopes = %v, want normalized unique scopes", result.APIKey.Scopes)
+	}
+	if result.APIKey.ExpiresAt == nil {
+		t.Fatal("CreateAPIKey() did not apply default expiration")
+	}
+	if len(store.apiKeys) != 1 {
+		t.Fatalf("stored keys = %d, want 1", len(store.apiKeys))
+	}
+	if store.auditCount(AuditEventAPIKeyCreated) != 1 {
+		t.Fatal("CreateAPIKey() did not record audit event")
 	}
 }
 
-func TestLoginCreatesSessionAndRefreshToken(t *testing.T) {
-	t.Parallel()
-
-	service, store := newTestService(t)
-	registered, err := service.Register(context.Background(), RegisterRequest{
-		Email:    "user@example.com",
-		Password: []byte("correct horse battery staple"),
-	})
-	if err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-
-	result, err := service.Login(context.Background(), LoginRequest{
-		Email:    "USER@example.com",
-		Password: []byte("correct horse battery staple"),
-	})
-	if err != nil {
-		t.Fatalf("Login() error = %v", err)
-	}
-
-	if result.User.ID != registered.User.ID {
-		t.Fatalf("Login() user ID = %q, want %q", result.User.ID, registered.User.ID)
-	}
-	if result.Session.UserID != registered.User.ID {
-		t.Fatalf("Login() session user ID = %q, want %q", result.Session.UserID, registered.User.ID)
-	}
-	if result.RefreshToken == "" {
-		t.Fatal("Login() returned empty refresh token")
-	}
-	if len(store.tokens) != 1 {
-		t.Fatalf("Login() stored %d refresh tokens, want 1", len(store.tokens))
-	}
-	if store.auditCount(AuditEventLoginSucceeded) != 1 {
-		t.Fatal("Login() did not record login success audit event")
-	}
-}
-
-func TestLoginRejectsWrongPasswordWithoutLeakingAccountState(t *testing.T) {
-	t.Parallel()
-
-	service, store := newTestService(t)
-	if _, err := service.Register(context.Background(), RegisterRequest{
-		Email:    "user@example.com",
-		Password: []byte("correct horse battery staple"),
-	}); err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-
-	_, err := service.Login(context.Background(), LoginRequest{
-		Email:    "user@example.com",
-		Password: []byte("wrong password"),
-	})
-	if !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("Login() error = %v, want ErrInvalidCredentials", err)
-	}
-	if store.auditCount(AuditEventLoginFailed) != 1 {
-		t.Fatal("Login() did not record login failure audit event")
-	}
-}
-
-func TestLoginRejectsUnknownEmailLikeWrongPassword(t *testing.T) {
+func TestCreateAPIKeyRejectsMissingPrincipal(t *testing.T) {
 	t.Parallel()
 
 	service, _ := newTestService(t)
-	_, err := service.Login(context.Background(), LoginRequest{
-		Email:    "missing@example.com",
-		Password: []byte("wrong password"),
+	_, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeGroup,
+		OwnerID:   "missing",
 	})
-	if !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("Login() error = %v, want ErrInvalidCredentials", err)
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("CreateAPIKey() error = %v, want ErrInvalidRequest", err)
 	}
 }
 
-func TestLogoutRevokesSession(t *testing.T) {
+func TestCreateAPIKeyRejectsDisabledPrincipal(t *testing.T) {
 	t.Parallel()
 
 	service, store := newTestService(t)
-	login := registerAndLogin(t, service)
-
-	if err := service.Logout(context.Background(), LogoutRequest{SessionID: login.Session.ID}); err != nil {
-		t.Fatalf("Logout() error = %v", err)
+	disabledAt := time.Date(2026, 6, 3, 16, 1, 0, 0, time.UTC)
+	store.principals[principalKey(PrincipalTypeGroup, "group_disabled")] = Principal{
+		ID:         "group_disabled",
+		Type:       PrincipalTypeGroup,
+		Name:       "Disabled Group",
+		CreatedAt:  disabledAt,
+		UpdatedAt:  disabledAt,
+		DisabledAt: &disabledAt,
 	}
 
-	session := store.sessions[login.Session.ID]
-	if session.RevokedAt == nil {
-		t.Fatal("Logout() did not revoke session")
-	}
-	if store.auditCount(AuditEventLogoutSucceeded) != 1 {
-		t.Fatal("Logout() did not record logout audit event")
+	_, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeGroup,
+		OwnerID:   "group_disabled",
+	})
+	if !errors.Is(err, ErrDisabledPrincipal) {
+		t.Fatalf("CreateAPIKey() error = %v, want ErrDisabledPrincipal", err)
 	}
 }
 
-func TestRefreshSessionRotatesRefreshToken(t *testing.T) {
+func TestVerifyAPIKeyReturnsPrincipalAndTouchesKey(t *testing.T) {
 	t.Parallel()
 
 	service, store := newTestService(t)
-	login := registerAndLogin(t, service)
-
-	result, err := service.RefreshSession(context.Background(), RefreshSessionRequest{
-		RefreshToken: login.RefreshToken,
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Scopes:    []string{"cards:read"},
 	})
 	if err != nil {
-		t.Fatalf("RefreshSession() error = %v", err)
+		t.Fatalf("CreateAPIKey() error = %v", err)
 	}
 
-	if result.RefreshToken == "" || result.RefreshToken == login.RefreshToken {
-		t.Fatal("RefreshSession() did not return replacement refresh token")
-	}
-	if result.Session.UserID != login.User.ID {
-		t.Fatalf("RefreshSession() session user ID = %q, want %q", result.Session.UserID, login.User.ID)
+	verified, err := service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{
+		RawKey:         created.RawKey,
+		RequiredScopes: []string{"cards:read"},
+	})
+	if err != nil {
+		t.Fatalf("VerifyAPIKey() error = %v", err)
 	}
 
-	revokedCount := 0
-	for _, token := range store.tokens {
-		if token.RevokedAt != nil {
-			revokedCount++
-		}
+	if verified.Principal.ID != "user_123" {
+		t.Fatalf("Principal.ID = %q, want user_123", verified.Principal.ID)
 	}
-	if revokedCount != 1 {
-		t.Fatalf("RefreshSession() revoked %d tokens, want 1", revokedCount)
+	if verified.APIKey.LastUsedAt == nil {
+		t.Fatal("VerifyAPIKey() did not touch key")
 	}
-	if store.auditCount(AuditEventTokenRefreshed) != 1 {
-		t.Fatal("RefreshSession() did not record token refresh audit event")
+	if store.auditCount(AuditEventAPIKeyVerified) != 1 {
+		t.Fatal("VerifyAPIKey() did not record audit event")
 	}
 }
 
-func TestRefreshSessionRejectsReplayAndRevokesFamily(t *testing.T) {
+func TestVerifyAPIKeyRejectsWrongSecret(t *testing.T) {
 	t.Parallel()
 
 	service, store := newTestService(t)
-	login := registerAndLogin(t, service)
-	if _, err := service.RefreshSession(context.Background(), RefreshSessionRequest{
-		RefreshToken: login.RefreshToken,
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	_, err = service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{
+		RawKey: created.APIKey.Prefix + ".wrong",
+	})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("VerifyAPIKey() error = %v, want ErrInvalidCredentials", err)
+	}
+	if store.auditCount(AuditEventAPIKeyVerificationFailed) != 1 {
+		t.Fatal("VerifyAPIKey() did not record failure audit event")
+	}
+}
+
+func TestVerifyAPIKeyRejectsMissingScope(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeGroup,
+		OwnerID:   "group_123",
+		Scopes:    []string{"cards:read"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	_, err = service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{
+		RawKey:         created.RawKey,
+		RequiredScopes: []string{"cards:write"},
+	})
+	if !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("VerifyAPIKey() error = %v, want ErrPermissionDenied", err)
+	}
+}
+
+func TestVerifyAPIKeyRejectsRevokedKey(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	if err := service.RevokeAPIKey(context.Background(), RevokeAPIKeyRequest{APIKeyID: created.APIKey.ID}); err != nil {
+		t.Fatalf("RevokeAPIKey() error = %v", err)
+	}
+
+	_, err = service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{RawKey: created.RawKey})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("VerifyAPIKey() error = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestVerifyAPIKeyRejectsExpiredKey(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+	expiredAt := time.Date(2026, 6, 3, 15, 59, 0, 0, time.UTC)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		ExpiresAt: &expiredAt,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("CreateAPIKey() error = %v, want ErrInvalidRequest", err)
+	}
+	if created.RawKey != "" {
+		t.Fatal("CreateAPIKey() returned raw key for expired request")
+	}
+}
+
+func TestRevokeAPIKeyRevokesStoredKey(t *testing.T) {
+	t.Parallel()
+
+	service, store := newTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	if err := service.RevokeAPIKey(context.Background(), RevokeAPIKeyRequest{APIKeyID: created.APIKey.ID}); err != nil {
+		t.Fatalf("RevokeAPIKey() error = %v", err)
+	}
+	if store.apiKeys[created.APIKey.ID].RevokedAt == nil {
+		t.Fatal("RevokeAPIKey() did not revoke key")
+	}
+	if store.auditCount(AuditEventAPIKeyRevoked) != 1 {
+		t.Fatal("RevokeAPIKey() did not record audit event")
+	}
+}
+
+func TestListAPIKeysReturnsOwnerKeys(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+	for _, ownerID := range []string{"user_123", "user_123"} {
+		if _, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+			OwnerType: PrincipalTypeUser,
+			OwnerID:   ownerID,
+		}); err != nil {
+			t.Fatalf("CreateAPIKey() error = %v", err)
+		}
+	}
+	if _, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeGroup,
+		OwnerID:   "group_123",
 	}); err != nil {
-		t.Fatalf("RefreshSession() error = %v", err)
+		t.Fatalf("CreateAPIKey() error = %v", err)
 	}
 
-	_, err := service.RefreshSession(context.Background(), RefreshSessionRequest{
-		RefreshToken: login.RefreshToken,
-	})
-	if !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("RefreshSession() replay error = %v, want ErrInvalidCredentials", err)
-	}
-
-	for _, token := range store.tokens {
-		if token.RevokedAt == nil {
-			t.Fatal("RefreshSession() replay did not revoke token family")
-		}
-	}
-}
-
-func TestChangePasswordUpdatesHashAndRevokesSessionsAndTokens(t *testing.T) {
-	t.Parallel()
-
-	service, store := newTestService(t)
-	login := registerAndLogin(t, service)
-	oldHash := append([]byte(nil), store.passwordHashes[login.User.ID]...)
-
-	err := service.ChangePassword(context.Background(), ChangePasswordRequest{
-		UserID:          login.User.ID,
-		CurrentPassword: []byte("correct horse battery staple"),
-		NewPassword:     []byte("new correct horse battery staple"),
+	keys, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
 	})
 	if err != nil {
-		t.Fatalf("ChangePassword() error = %v", err)
+		t.Fatalf("ListAPIKeys() error = %v", err)
 	}
-
-	if bytes.Equal(oldHash, store.passwordHashes[login.User.ID]) {
-		t.Fatal("ChangePassword() did not update password hash")
-	}
-	if store.sessions[login.Session.ID].RevokedAt == nil {
-		t.Fatal("ChangePassword() did not revoke sessions")
-	}
-	for _, token := range store.tokens {
-		if token.RevokedAt == nil {
-			t.Fatal("ChangePassword() did not revoke refresh tokens")
-		}
-	}
-	if store.auditCount(AuditEventPasswordChanged) != 1 {
-		t.Fatal("ChangePassword() did not record password change audit event")
+	if len(keys) != 2 {
+		t.Fatalf("ListAPIKeys() returned %d keys, want 2", len(keys))
 	}
 }
 
-func TestWorkflowRequiresStores(t *testing.T) {
+func TestAPIKeyWorkflowsRequireStores(t *testing.T) {
 	t.Parallel()
 
 	service, err := New(Config{Issuer: "test-issuer"})
@@ -225,48 +260,41 @@ func TestWorkflowRequiresStores(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = service.Login(context.Background(), LoginRequest{
-		Email:    "user@example.com",
-		Password: []byte("password"),
+	_, err = service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
 	})
 	if !errors.Is(err, ErrMissingStore) {
-		t.Fatalf("Login() error = %v, want ErrMissingStore", err)
+		t.Fatalf("CreateAPIKey() error = %v, want ErrMissingStore", err)
 	}
-}
-
-func registerAndLogin(t *testing.T, service *Service) LoginResult {
-	t.Helper()
-
-	if _, err := service.Register(context.Background(), RegisterRequest{
-		Email:    "user@example.com",
-		Password: []byte("correct horse battery staple"),
-	}); err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-
-	login, err := service.Login(context.Background(), LoginRequest{
-		Email:    "user@example.com",
-		Password: []byte("correct horse battery staple"),
-	})
-	if err != nil {
-		t.Fatalf("Login() error = %v", err)
-	}
-	return login
 }
 
 func newTestService(t *testing.T) (*Service, *memoryStore) {
 	t.Helper()
 
+	now := time.Date(2026, 6, 3, 16, 0, 0, 0, time.UTC)
 	store := newMemoryStore()
+	store.principals[principalKey(PrincipalTypeUser, "user_123")] = Principal{
+		ID:        "user_123",
+		Type:      PrincipalTypeUser,
+		Name:      "Test User",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	store.principals[principalKey(PrincipalTypeGroup, "group_123")] = Principal{
+		ID:        "group_123",
+		Type:      PrincipalTypeGroup,
+		Name:      "Test Group",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
 	service, err := New(Config{
-		Issuer:      "test-issuer",
-		Clock:       fixedClock{now: time.Date(2026, 6, 3, 16, 0, 0, 0, time.UTC)},
-		Passwords:   password.Argon2id(),
-		Users:       store,
-		Credentials: store,
-		Sessions:    store,
-		Tokens:      store,
-		Audit:       store,
+		Issuer:     "test-issuer",
+		Clock:      fixedClock{now: now},
+		Principals: store,
+		APIKeys:    store,
+		Audit:      store,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -275,224 +303,104 @@ func newTestService(t *testing.T) (*Service, *memoryStore) {
 }
 
 type memoryStore struct {
-	users          map[string]User
-	usersByEmail   map[string]string
-	passwordHashes map[string][]byte
-	sessions       map[string]Session
-	tokens         map[string]Token
-	tokensByHash   map[string]string
-	auditEvents    []AuditEvent
+	principals map[string]Principal
+	apiKeys    map[string]APIKey
+	byPrefix   map[string]string
+	audit      []AuditEvent
 }
 
 func newMemoryStore() *memoryStore {
 	return &memoryStore{
-		users:          make(map[string]User),
-		usersByEmail:   make(map[string]string),
-		passwordHashes: make(map[string][]byte),
-		sessions:       make(map[string]Session),
-		tokens:         make(map[string]Token),
-		tokensByHash:   make(map[string]string),
+		principals: make(map[string]Principal),
+		apiKeys:    make(map[string]APIKey),
+		byPrefix:   make(map[string]string),
 	}
 }
 
-func (s *memoryStore) CreateUser(_ context.Context, user User) error {
-	if _, ok := s.users[user.ID]; ok {
+func (s *memoryStore) GetPrincipal(_ context.Context, principalType PrincipalType, principalID string) (Principal, error) {
+	principal, ok := s.principals[principalKey(principalType, principalID)]
+	if !ok {
+		return Principal{}, ErrNotFound
+	}
+	return principal, nil
+}
+
+func (s *memoryStore) CreateAPIKey(_ context.Context, key APIKey) error {
+	if _, ok := s.apiKeys[key.ID]; ok {
 		return ErrAlreadyExists
 	}
-	if _, ok := s.usersByEmail[user.Email]; ok {
+	if _, ok := s.byPrefix[key.Prefix]; ok {
 		return ErrAlreadyExists
 	}
-	s.users[user.ID] = user
-	s.usersByEmail[user.Email] = user.ID
+	s.apiKeys[key.ID] = key
+	s.byPrefix[key.Prefix] = key.ID
 	return nil
 }
 
-func (s *memoryStore) GetUserByID(_ context.Context, userID string) (User, error) {
-	user, ok := s.users[userID]
+func (s *memoryStore) GetAPIKeyByID(_ context.Context, keyID string) (APIKey, error) {
+	key, ok := s.apiKeys[keyID]
 	if !ok {
-		return User{}, ErrNotFound
+		return APIKey{}, ErrNotFound
 	}
-	return user, nil
+	return key, nil
 }
 
-func (s *memoryStore) GetUserByEmail(_ context.Context, email string) (User, error) {
-	userID, ok := s.usersByEmail[email]
+func (s *memoryStore) GetAPIKeyByPrefix(_ context.Context, prefix string) (APIKey, error) {
+	keyID, ok := s.byPrefix[prefix]
 	if !ok {
-		return User{}, ErrNotFound
+		return APIKey{}, ErrNotFound
 	}
-	return s.GetUserByID(context.Background(), userID)
+	return s.GetAPIKeyByID(context.Background(), keyID)
 }
 
-func (s *memoryStore) UpdateUser(_ context.Context, user User) error {
-	if _, ok := s.users[user.ID]; !ok {
-		return ErrNotFound
-	}
-	if existingID, ok := s.usersByEmail[user.Email]; ok && existingID != user.ID {
-		return ErrConflict
-	}
-	s.users[user.ID] = user
-	s.usersByEmail[user.Email] = user.ID
-	return nil
-}
-
-func (s *memoryStore) SetPasswordHash(_ context.Context, userID string, passwordHash []byte) error {
-	if _, ok := s.users[userID]; !ok {
-		return ErrNotFound
-	}
-	s.passwordHashes[userID] = append([]byte(nil), passwordHash...)
-	return nil
-}
-
-func (s *memoryStore) GetPasswordHash(_ context.Context, userID string) ([]byte, error) {
-	hash, ok := s.passwordHashes[userID]
-	if !ok {
-		return nil, ErrNotFound
-	}
-	return append([]byte(nil), hash...), nil
-}
-
-func (s *memoryStore) DeletePasswordHash(_ context.Context, userID string) error {
-	if _, ok := s.passwordHashes[userID]; !ok {
-		return ErrNotFound
-	}
-	delete(s.passwordHashes, userID)
-	return nil
-}
-
-func (s *memoryStore) CreateSession(_ context.Context, session Session) error {
-	if _, ok := s.sessions[session.ID]; ok {
-		return ErrAlreadyExists
-	}
-	s.sessions[session.ID] = session
-	return nil
-}
-
-func (s *memoryStore) GetSessionByID(_ context.Context, sessionID string) (Session, error) {
-	session, ok := s.sessions[sessionID]
-	if !ok {
-		return Session{}, ErrNotFound
-	}
-	return session, nil
-}
-
-func (s *memoryStore) ListSessionsByUserID(_ context.Context, userID string) ([]Session, error) {
-	var sessions []Session
-	for _, session := range s.sessions {
-		if session.UserID == userID {
-			sessions = append(sessions, session)
+func (s *memoryStore) ListAPIKeys(_ context.Context, ownerType PrincipalType, ownerID string) ([]APIKey, error) {
+	var keys []APIKey
+	for _, key := range s.apiKeys {
+		if key.OwnerType == ownerType && key.OwnerID == ownerID {
+			keys = append(keys, key)
 		}
 	}
-	return sessions, nil
+	return keys, nil
 }
 
-func (s *memoryStore) RevokeSession(_ context.Context, sessionID string, revokedAt time.Time) error {
-	session, ok := s.sessions[sessionID]
+func (s *memoryStore) RevokeAPIKey(_ context.Context, keyID string, revokedAt time.Time) error {
+	key, ok := s.apiKeys[keyID]
 	if !ok {
 		return ErrNotFound
 	}
-	if session.RevokedAt != nil {
+	if key.RevokedAt != nil {
 		return ErrInvalidState
 	}
-	session.RevokedAt = &revokedAt
-	s.sessions[sessionID] = session
+	key.RevokedAt = &revokedAt
+	s.apiKeys[keyID] = key
 	return nil
 }
 
-func (s *memoryStore) RevokeUserSessions(_ context.Context, userID string, revokedAt time.Time) error {
-	for id, session := range s.sessions {
-		if session.UserID == userID && session.RevokedAt == nil {
-			session.RevokedAt = &revokedAt
-			s.sessions[id] = session
-		}
-	}
-	return nil
-}
-
-func (s *memoryStore) CreateToken(_ context.Context, token Token) error {
-	if _, ok := s.tokens[token.ID]; ok {
-		return ErrAlreadyExists
-	}
-	hashKey := string(token.Hash)
-	if _, ok := s.tokensByHash[hashKey]; ok {
-		return ErrAlreadyExists
-	}
-	s.tokens[token.ID] = token
-	s.tokensByHash[hashKey] = token.ID
-	return nil
-}
-
-func (s *memoryStore) GetTokenByID(_ context.Context, tokenID string) (Token, error) {
-	token, ok := s.tokens[tokenID]
-	if !ok {
-		return Token{}, ErrNotFound
-	}
-	return token, nil
-}
-
-func (s *memoryStore) GetTokenByHash(_ context.Context, tokenHash []byte) (Token, error) {
-	tokenID, ok := s.tokensByHash[string(tokenHash)]
-	if !ok {
-		return Token{}, ErrNotFound
-	}
-	return s.GetTokenByID(context.Background(), tokenID)
-}
-
-func (s *memoryStore) RevokeToken(_ context.Context, tokenID string, revokedAt time.Time) error {
-	token, ok := s.tokens[tokenID]
+func (s *memoryStore) TouchAPIKey(_ context.Context, keyID string, usedAt time.Time) error {
+	key, ok := s.apiKeys[keyID]
 	if !ok {
 		return ErrNotFound
 	}
-	if token.RevokedAt != nil {
-		return ErrInvalidState
-	}
-	token.RevokedAt = &revokedAt
-	s.tokens[tokenID] = token
-	return nil
-}
-
-func (s *memoryStore) RotateToken(_ context.Context, currentHash []byte, replacement Token, rotatedAt time.Time) (Token, error) {
-	current, err := s.GetTokenByHash(context.Background(), currentHash)
-	if err != nil {
-		return Token{}, err
-	}
-	if current.RevokedAt != nil || current.IsExpired(rotatedAt) {
-		return Token{}, ErrInvalidState
-	}
-	if _, ok := s.tokens[replacement.ID]; ok {
-		return Token{}, ErrAlreadyExists
-	}
-	if _, ok := s.tokensByHash[string(replacement.Hash)]; ok {
-		return Token{}, ErrAlreadyExists
-	}
-
-	current.RevokedAt = &rotatedAt
-	s.tokens[current.ID] = current
-	s.tokens[replacement.ID] = replacement
-	s.tokensByHash[string(replacement.Hash)] = replacement.ID
-	return current, nil
-}
-
-func (s *memoryStore) RevokeTokenFamily(_ context.Context, familyID string, revokedAt time.Time) error {
-	for id, token := range s.tokens {
-		if token.FamilyID == familyID && token.RevokedAt == nil {
-			token.RevokedAt = &revokedAt
-			s.tokens[id] = token
-		}
-	}
+	key.LastUsedAt = &usedAt
+	s.apiKeys[keyID] = key
 	return nil
 }
 
 func (s *memoryStore) RecordAuditEvent(_ context.Context, event AuditEvent) error {
-	s.auditEvents = append(s.auditEvents, event)
+	s.audit = append(s.audit, event)
 	return nil
 }
 
 func (s *memoryStore) auditCount(eventType AuditEventType) int {
 	count := 0
-	for _, event := range s.auditEvents {
+	for _, event := range s.audit {
 		if event.Type == eventType {
 			count++
 		}
 	}
 	return count
+}
+
+func principalKey(principalType PrincipalType, principalID string) string {
+	return string(principalType) + ":" + principalID
 }

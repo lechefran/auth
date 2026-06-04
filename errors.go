@@ -21,11 +21,14 @@ var (
 	ErrInvalidRequest = errors.New("auth: invalid request")
 
 	// ErrInvalidCredentials reports failed authentication without revealing
-	// whether an account, password, session, or token was the failing factor.
+	// whether an API key prefix, hash, owner, or state was the failing factor.
 	ErrInvalidCredentials = errors.New("auth: invalid credentials")
 
-	// ErrDisabledUser reports that an otherwise valid account is disabled.
-	ErrDisabledUser = errors.New("auth: disabled user")
+	// ErrDisabledPrincipal reports that an otherwise valid principal is disabled.
+	ErrDisabledPrincipal = errors.New("auth: disabled principal")
+
+	// ErrPermissionDenied reports that a valid API key lacks required scope.
+	ErrPermissionDenied = errors.New("auth: permission denied")
 
 	// ErrMissingStore reports that a workflow was called without the required
 	// storage dependency configured.

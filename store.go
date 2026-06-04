@@ -5,89 +5,38 @@ import (
 	"time"
 )
 
-// UserStore persists account records.
-type UserStore interface {
-	// CreateUser stores a new user. It returns ErrAlreadyExists when a unique
-	// user field, such as ID or email, is already present.
-	CreateUser(ctx context.Context, user User) error
-
-	// GetUserByID returns ErrNotFound when userID does not exist.
-	GetUserByID(ctx context.Context, userID string) (User, error)
-
-	// GetUserByEmail returns ErrNotFound when email does not exist.
-	GetUserByEmail(ctx context.Context, email string) (User, error)
-
-	// UpdateUser returns ErrNotFound when the user does not exist and
-	// ErrConflict when a unique field collides with another user.
-	UpdateUser(ctx context.Context, user User) error
+// PrincipalStore persists users and groups that can own API keys.
+type PrincipalStore interface {
+	// GetPrincipal returns ErrNotFound when the principal does not exist.
+	GetPrincipal(ctx context.Context, principalType PrincipalType, principalID string) (Principal, error)
 }
 
-// CredentialStore persists credential verifiers.
+// APIKeyStore persists API key metadata and hashed key lookups.
 //
-// Implementations must never log passwordHash values. Password hashes are not
-// plaintext secrets, but they are still sensitive verifier material.
-type CredentialStore interface {
-	// SetPasswordHash creates or replaces a user's password verifier. It
-	// returns ErrNotFound when userID does not exist.
-	SetPasswordHash(ctx context.Context, userID string, passwordHash []byte) error
+// Raw API key values must never be persisted. Store adapters should index by
+// Prefix and store only Hash for verification.
+type APIKeyStore interface {
+	// CreateAPIKey stores key metadata. It returns ErrAlreadyExists when the key
+	// ID or prefix is already present.
+	CreateAPIKey(ctx context.Context, key APIKey) error
 
-	// GetPasswordHash returns ErrNotFound when no password verifier exists.
-	GetPasswordHash(ctx context.Context, userID string) ([]byte, error)
+	// GetAPIKeyByID returns ErrNotFound when keyID does not exist.
+	GetAPIKeyByID(ctx context.Context, keyID string) (APIKey, error)
 
-	// DeletePasswordHash returns ErrNotFound when no password verifier exists.
-	DeletePasswordHash(ctx context.Context, userID string) error
-}
+	// GetAPIKeyByPrefix returns ErrNotFound when prefix does not exist.
+	GetAPIKeyByPrefix(ctx context.Context, prefix string) (APIKey, error)
 
-// SessionStore persists server-side session state.
-type SessionStore interface {
-	// CreateSession stores a new session. It returns ErrAlreadyExists when the
-	// session ID is already present.
-	CreateSession(ctx context.Context, session Session) error
+	// ListAPIKeys returns keys for a principal. It returns an empty slice when
+	// the principal has no keys.
+	ListAPIKeys(ctx context.Context, ownerType PrincipalType, ownerID string) ([]APIKey, error)
 
-	// GetSessionByID returns ErrNotFound when sessionID does not exist.
-	GetSessionByID(ctx context.Context, sessionID string) (Session, error)
+	// RevokeAPIKey returns ErrNotFound when keyID does not exist and
+	// ErrInvalidState when the key cannot be revoked.
+	RevokeAPIKey(ctx context.Context, keyID string, revokedAt time.Time) error
 
-	// ListSessionsByUserID returns an empty slice when the user has no sessions.
-	ListSessionsByUserID(ctx context.Context, userID string) ([]Session, error)
-
-	// RevokeSession returns ErrNotFound when sessionID does not exist and
-	// ErrInvalidState when the session cannot be revoked.
-	RevokeSession(ctx context.Context, sessionID string, revokedAt time.Time) error
-
-	// RevokeUserSessions revokes all active sessions for the user. It should be
-	// idempotent and return nil when the user has no active sessions.
-	RevokeUserSessions(ctx context.Context, userID string, revokedAt time.Time) error
-}
-
-// TokenStore persists token metadata and hashed token lookups.
-//
-// Raw token values must never be persisted. Store adapters should index only
-// token hashes produced by the token generation module.
-type TokenStore interface {
-	// CreateToken stores token metadata. It returns ErrAlreadyExists when the
-	// token ID or token hash is already present.
-	CreateToken(ctx context.Context, token Token) error
-
-	// GetTokenByID returns ErrNotFound when tokenID does not exist.
-	GetTokenByID(ctx context.Context, tokenID string) (Token, error)
-
-	// GetTokenByHash returns ErrNotFound when tokenHash does not exist.
-	GetTokenByHash(ctx context.Context, tokenHash []byte) (Token, error)
-
-	// RevokeToken returns ErrNotFound when tokenID does not exist and
-	// ErrInvalidState when the token cannot be revoked.
-	RevokeToken(ctx context.Context, tokenID string, revokedAt time.Time) error
-
-	// RotateToken atomically revokes the token identified by currentHash and
-	// stores replacement. It returns the previous token metadata. It returns
-	// ErrNotFound when currentHash does not exist, ErrInvalidState when the
-	// current token is revoked or expired at rotatedAt, and ErrAlreadyExists
-	// when the replacement token ID or hash already exists.
-	RotateToken(ctx context.Context, currentHash []byte, replacement Token, rotatedAt time.Time) (Token, error)
-
-	// RevokeTokenFamily revokes every token in a token family. It should be
-	// idempotent and return nil when the family has no active tokens.
-	RevokeTokenFamily(ctx context.Context, familyID string, revokedAt time.Time) error
+	// TouchAPIKey records successful use. It returns ErrNotFound when keyID does
+	// not exist.
+	TouchAPIKey(ctx context.Context, keyID string, usedAt time.Time) error
 }
 
 // AuditStore records security-relevant events.

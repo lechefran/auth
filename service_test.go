@@ -26,14 +26,11 @@ func TestNewAppliesSecureDefaults(t *testing.T) {
 	if cfg.Clock == nil {
 		t.Fatal("expected default clock")
 	}
-	if cfg.AccessTokenTTL != defaultAccessTokenTTL {
-		t.Fatalf("AccessTokenTTL = %v, want %v", cfg.AccessTokenTTL, defaultAccessTokenTTL)
+	if cfg.KeyPrefix != defaultKeyPrefix {
+		t.Fatalf("KeyPrefix = %q, want %q", cfg.KeyPrefix, defaultKeyPrefix)
 	}
-	if cfg.RefreshTokenTTL != defaultRefreshTokenTTL {
-		t.Fatalf("RefreshTokenTTL = %v, want %v", cfg.RefreshTokenTTL, defaultRefreshTokenTTL)
-	}
-	if cfg.SessionTTL != defaultSessionTTL {
-		t.Fatalf("SessionTTL = %v, want %v", cfg.SessionTTL, defaultSessionTTL)
+	if cfg.APIKeyTTL != defaultAPIKeyTTL {
+		t.Fatalf("APIKeyTTL = %v, want %v", cfg.APIKeyTTL, defaultAPIKeyTTL)
 	}
 }
 
@@ -49,40 +46,17 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 			cfg:  Config{},
 		},
 		{
-			name: "negative access token ttl",
+			name: "reserved key prefix delimiter",
 			cfg: Config{
-				Issuer:         "test-issuer",
-				AccessTokenTTL: -time.Second,
+				Issuer:    "test-issuer",
+				KeyPrefix: "bad_prefix",
 			},
 		},
 		{
-			name: "negative refresh token ttl",
+			name: "negative api key ttl",
 			cfg: Config{
-				Issuer:          "test-issuer",
-				RefreshTokenTTL: -time.Second,
-			},
-		},
-		{
-			name: "negative session ttl",
-			cfg: Config{
-				Issuer:     "test-issuer",
-				SessionTTL: -time.Second,
-			},
-		},
-		{
-			name: "access token ttl exceeds refresh token ttl",
-			cfg: Config{
-				Issuer:          "test-issuer",
-				AccessTokenTTL:  time.Hour,
-				RefreshTokenTTL: time.Minute,
-			},
-		},
-		{
-			name: "session ttl exceeds refresh token ttl",
-			cfg: Config{
-				Issuer:          "test-issuer",
-				RefreshTokenTTL: time.Hour,
-				SessionTTL:      2 * time.Hour,
+				Issuer:    "test-issuer",
+				APIKeyTTL: -time.Second,
 			},
 		},
 	}

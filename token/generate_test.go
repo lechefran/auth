@@ -6,51 +6,32 @@ import (
 	"testing"
 )
 
-func TestGenerateReturnsDistinctURLSafeTokens(t *testing.T) {
+func TestGenerateOpaqueReturnsDistinctURLSafeValues(t *testing.T) {
 	t.Parallel()
 
-	first, err := GenerateSessionID()
+	first, err := GenerateAPIKeySecret()
 	if err != nil {
-		t.Fatalf("GenerateSessionID() error = %v", err)
+		t.Fatalf("GenerateAPIKeySecret() error = %v", err)
 	}
-	second, err := GenerateSessionID()
+	second, err := GenerateAPIKeySecret()
 	if err != nil {
-		t.Fatalf("GenerateSessionID() error = %v", err)
+		t.Fatalf("GenerateAPIKeySecret() error = %v", err)
 	}
 
 	if first == second {
-		t.Fatal("GenerateSessionID() returned duplicate values")
+		t.Fatal("GenerateAPIKeySecret() returned duplicate values")
 	}
 	if strings.ContainsAny(first, "+/=") {
-		t.Fatalf("GenerateSessionID() = %q, want raw URL-safe base64", first)
+		t.Fatalf("GenerateAPIKeySecret() = %q, want raw URL-safe base64", first)
 	}
 }
 
 func TestGenerateRejectsShortLength(t *testing.T) {
 	t.Parallel()
 
-	_, err := Generate(minTokenBytes - 1)
+	_, err := GenerateOpaque(minTokenBytes - 1)
 	if !errors.Is(err, ErrInvalidLength) {
-		t.Fatalf("Generate() error = %v, want ErrInvalidLength", err)
-	}
-}
-
-func TestGenerateRecoveryCodeIsGrouped(t *testing.T) {
-	t.Parallel()
-
-	code, err := GenerateRecoveryCode()
-	if err != nil {
-		t.Fatalf("GenerateRecoveryCode() error = %v", err)
-	}
-
-	parts := strings.Split(code, "-")
-	if len(parts) != 4 {
-		t.Fatalf("GenerateRecoveryCode() = %q, want 4 groups", code)
-	}
-	for _, part := range parts {
-		if len(part) != recoveryCodeGroupSize {
-			t.Fatalf("GenerateRecoveryCode() group = %q, want length %d", part, recoveryCodeGroupSize)
-		}
+		t.Fatalf("GenerateOpaque() error = %v, want ErrInvalidLength", err)
 	}
 }
 

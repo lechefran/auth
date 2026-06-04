@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,380 +11,234 @@ import (
 	"github.com/lechefran/auth/token"
 )
 
-// RegisterRequest contains the information needed to create a password-backed
-// user account.
-type RegisterRequest struct {
-	Email       string
-	DisplayName string
-	Password    []byte
+// CreateAPIKeyRequest contains metadata for a new API key.
+type CreateAPIKeyRequest struct {
+	OwnerType PrincipalType
+	OwnerID   string
+	Name      string
+	Scopes    []string
+	ExpiresAt *time.Time
 }
 
-// RegisterResult contains the created user.
-type RegisterResult struct {
-	User User
+// CreateAPIKeyResult returns the stored key metadata and the raw API key.
+//
+// RawKey is shown once. It must not be logged or stored.
+type CreateAPIKeyResult struct {
+	APIKey APIKey
+	RawKey string
 }
 
-// LoginRequest contains password login credentials.
-type LoginRequest struct {
-	Email    string
-	Password []byte
+// VerifyAPIKeyRequest contains a raw API key and optional required scopes.
+type VerifyAPIKeyRequest struct {
+	RawKey         string
+	RequiredScopes []string
 }
 
-// LoginResult contains the authenticated user, new session, and refresh token.
-type LoginResult struct {
-	User         User
-	Session      Session
-	RefreshToken string
+// VerifyAPIKeyResult contains the verified key and owning principal.
+type VerifyAPIKeyResult struct {
+	APIKey    APIKey
+	Principal Principal
 }
 
-// LogoutRequest identifies a session to revoke.
-type LogoutRequest struct {
-	SessionID string
+// RevokeAPIKeyRequest identifies an API key to revoke.
+type RevokeAPIKeyRequest struct {
+	APIKeyID string
 }
 
-// RefreshSessionRequest contains a refresh token to rotate.
-type RefreshSessionRequest struct {
-	RefreshToken string
+// ListAPIKeysRequest identifies the principal whose keys should be listed.
+type ListAPIKeysRequest struct {
+	OwnerType PrincipalType
+	OwnerID   string
 }
 
-// RefreshSessionResult contains the refreshed session and replacement refresh
-// token. The previous refresh token must be discarded by the caller.
-type RefreshSessionResult struct {
-	Session      Session
-	RefreshToken string
-}
-
-// ChangePasswordRequest changes a user's password after verifying the current
-// password.
-type ChangePasswordRequest struct {
-	UserID          string
-	CurrentPassword []byte
-	NewPassword     []byte
-}
-
-// Register creates a password-backed user account.
-func (s *Service) Register(ctx context.Context, req RegisterRequest) (RegisterResult, error) {
-	email := normalizeEmail(req.Email)
-	if email == "" || len(req.Password) == 0 {
-		return RegisterResult{}, ErrInvalidRequest
+// CreateAPIKey creates a new API key for a user or group.
+func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (CreateAPIKeyResult, error) {
+	if err := validatePrincipalRef(req.OwnerType, req.OwnerID); err != nil {
+		return CreateAPIKeyResult{}, err
 	}
-	if err := s.requireStores(s.cfg.Users, s.cfg.Credentials); err != nil {
-		return RegisterResult{}, err
+	if err := s.requireStores(s.cfg.Principals, s.cfg.APIKeys); err != nil {
+		return CreateAPIKeyResult{}, err
 	}
 
-	now := s.cfg.Clock.Now()
-	userID, err := token.GenerateSessionID()
-	if err != nil {
-		return RegisterResult{}, fmt.Errorf("generate user id: %w", err)
-	}
-
-	hash, err := s.cfg.Passwords.Hash(req.Password)
-	if err != nil {
-		return RegisterResult{}, fmt.Errorf("hash password: %w", err)
-	}
-
-	user := User{
-		ID:          userID,
-		Email:       email,
-		DisplayName: strings.TrimSpace(req.DisplayName),
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	if err := s.cfg.Users.CreateUser(ctx, user); err != nil {
-		return RegisterResult{}, err
-	}
-	if err := s.cfg.Credentials.SetPasswordHash(ctx, user.ID, []byte(hash)); err != nil {
-		return RegisterResult{}, err
-	}
-	if err := s.recordAudit(ctx, AuditEventUserRegistered, "", user.ID, "", ""); err != nil {
-		return RegisterResult{}, err
-	}
-
-	return RegisterResult{User: user}, nil
-}
-
-// Login verifies a password and creates a session plus refresh token.
-func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResult, error) {
-	email := normalizeEmail(req.Email)
-	if email == "" || len(req.Password) == 0 {
-		return LoginResult{}, ErrInvalidRequest
-	}
-	if err := s.requireStores(s.cfg.Users, s.cfg.Credentials, s.cfg.Sessions, s.cfg.Tokens); err != nil {
-		return LoginResult{}, err
-	}
-
-	user, err := s.cfg.Users.GetUserByEmail(ctx, email)
+	principal, err := s.cfg.Principals.GetPrincipal(ctx, req.OwnerType, strings.TrimSpace(req.OwnerID))
 	if errors.Is(err, ErrNotFound) {
-		_ = s.recordAudit(ctx, AuditEventLoginFailed, "", "", "", "")
-		return LoginResult{}, ErrInvalidCredentials
+		return CreateAPIKeyResult{}, ErrInvalidRequest
 	}
 	if err != nil {
-		return LoginResult{}, err
+		return CreateAPIKeyResult{}, err
 	}
-	if user.IsDisabled() {
-		_ = s.recordAudit(ctx, AuditEventLoginFailed, user.ID, user.ID, "", "")
-		return LoginResult{}, ErrDisabledUser
-	}
-
-	storedHash, err := s.cfg.Credentials.GetPasswordHash(ctx, user.ID)
-	if errors.Is(err, ErrNotFound) {
-		_ = s.recordAudit(ctx, AuditEventLoginFailed, user.ID, user.ID, "", "")
-		return LoginResult{}, ErrInvalidCredentials
-	}
-	if err != nil {
-		return LoginResult{}, err
-	}
-
-	matched, needsRehash, err := s.cfg.Passwords.Verify(string(storedHash), req.Password)
-	if err != nil {
-		return LoginResult{}, fmt.Errorf("verify password: %w", err)
-	}
-	if !matched {
-		_ = s.recordAudit(ctx, AuditEventLoginFailed, user.ID, user.ID, "", "")
-		return LoginResult{}, ErrInvalidCredentials
-	}
-	if needsRehash {
-		hash, err := s.cfg.Passwords.Hash(req.Password)
-		if err != nil {
-			return LoginResult{}, fmt.Errorf("rehash password: %w", err)
-		}
-		if err := s.cfg.Credentials.SetPasswordHash(ctx, user.ID, []byte(hash)); err != nil {
-			return LoginResult{}, err
-		}
-	}
-
-	session, refreshToken, refreshRecord, err := s.createSessionAndRefreshToken(ctx, user.ID, "")
-	if err != nil {
-		return LoginResult{}, err
-	}
-	if err := s.recordAudit(ctx, AuditEventLoginSucceeded, user.ID, user.ID, session.ID, refreshRecord.ID); err != nil {
-		return LoginResult{}, err
-	}
-
-	return LoginResult{
-		User:         user,
-		Session:      session,
-		RefreshToken: refreshToken,
-	}, nil
-}
-
-// Logout revokes a session.
-func (s *Service) Logout(ctx context.Context, req LogoutRequest) error {
-	sessionID := strings.TrimSpace(req.SessionID)
-	if sessionID == "" {
-		return ErrInvalidRequest
-	}
-	if err := s.requireStores(s.cfg.Sessions); err != nil {
-		return err
+	if principal.IsDisabled() {
+		return CreateAPIKeyResult{}, ErrDisabledPrincipal
 	}
 
 	now := s.cfg.Clock.Now()
-	if err := s.cfg.Sessions.RevokeSession(ctx, sessionID, now); err != nil {
-		return err
-	}
-	return s.recordAudit(ctx, AuditEventLogoutSucceeded, "", "", sessionID, "")
-}
-
-// RefreshSession rotates a refresh token and creates a replacement session.
-func (s *Service) RefreshSession(ctx context.Context, req RefreshSessionRequest) (RefreshSessionResult, error) {
-	refreshToken := strings.TrimSpace(req.RefreshToken)
-	if refreshToken == "" {
-		return RefreshSessionResult{}, ErrInvalidRequest
-	}
-	if err := s.requireStores(s.cfg.Sessions, s.cfg.Tokens); err != nil {
-		return RefreshSessionResult{}, err
-	}
-
-	currentHash, err := token.LookupHash(refreshToken)
+	keyID, err := token.GeneratePublicID()
 	if err != nil {
-		return RefreshSessionResult{}, err
+		return CreateAPIKeyResult{}, fmt.Errorf("generate api key id: %w", err)
 	}
-	now := s.cfg.Clock.Now()
-
-	current, err := s.cfg.Tokens.GetTokenByHash(ctx, currentHash)
-	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidState) {
-		return RefreshSessionResult{}, ErrInvalidCredentials
-	}
+	publicID, err := token.GeneratePublicID()
 	if err != nil {
-		return RefreshSessionResult{}, err
+		return CreateAPIKeyResult{}, fmt.Errorf("generate api key prefix: %w", err)
 	}
-	if current.IsRevoked() {
-		_ = s.cfg.Tokens.RevokeTokenFamily(ctx, current.FamilyID, now)
-		return RefreshSessionResult{}, ErrInvalidCredentials
-	}
-	if current.IsExpired(now) || current.Issuer != s.cfg.Issuer || current.Subject == "" {
-		return RefreshSessionResult{}, ErrInvalidCredentials
-	}
-
-	replacementRaw, replacementRecord, err := s.newRefreshTokenRecord(current.Subject, current.FamilyID, now)
+	secret, err := token.GenerateAPIKeySecret()
 	if err != nil {
-		return RefreshSessionResult{}, err
+		return CreateAPIKeyResult{}, fmt.Errorf("generate api key secret: %w", err)
 	}
-	current, err = s.cfg.Tokens.RotateToken(ctx, currentHash, replacementRecord, now)
-	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidState) {
-		return RefreshSessionResult{}, ErrInvalidCredentials
-	}
+
+	prefix := s.cfg.KeyPrefix + "_" + publicID
+	rawKey := prefix + "." + secret
+	hash, err := token.LookupHash(rawKey)
 	if err != nil {
-		return RefreshSessionResult{}, err
+		return CreateAPIKeyResult{}, err
 	}
 
-	sessionID, err := token.GenerateSessionID()
-	if err != nil {
-		return RefreshSessionResult{}, fmt.Errorf("generate session id: %w", err)
+	expiresAt := req.ExpiresAt
+	if expiresAt == nil {
+		defaultExpiresAt := now.Add(s.cfg.APIKeyTTL)
+		expiresAt = &defaultExpiresAt
 	}
-	session := Session{
-		ID:        sessionID,
-		UserID:    current.Subject,
-		CreatedAt: now,
-		ExpiresAt: now.Add(s.cfg.SessionTTL),
-	}
-	if err := s.cfg.Sessions.CreateSession(ctx, session); err != nil {
-		return RefreshSessionResult{}, err
-	}
-	if err := s.recordAudit(ctx, AuditEventTokenRefreshed, current.Subject, current.Subject, session.ID, replacementRecord.ID); err != nil {
-		return RefreshSessionResult{}, err
+	if !expiresAt.After(now) {
+		return CreateAPIKeyResult{}, ErrInvalidRequest
 	}
 
-	return RefreshSessionResult{
-		Session:      session,
-		RefreshToken: replacementRaw,
-	}, nil
-}
-
-// ChangePassword verifies and replaces a user's password hash.
-func (s *Service) ChangePassword(ctx context.Context, req ChangePasswordRequest) error {
-	userID := strings.TrimSpace(req.UserID)
-	if userID == "" || len(req.CurrentPassword) == 0 || len(req.NewPassword) == 0 {
-		return ErrInvalidRequest
-	}
-	if err := s.requireStores(s.cfg.Users, s.cfg.Credentials, s.cfg.Sessions, s.cfg.Tokens); err != nil {
-		return err
-	}
-
-	user, err := s.cfg.Users.GetUserByID(ctx, userID)
-	if errors.Is(err, ErrNotFound) {
-		return ErrInvalidCredentials
-	}
-	if err != nil {
-		return err
-	}
-	if user.IsDisabled() {
-		return ErrDisabledUser
-	}
-
-	storedHash, err := s.cfg.Credentials.GetPasswordHash(ctx, user.ID)
-	if errors.Is(err, ErrNotFound) {
-		return ErrInvalidCredentials
-	}
-	if err != nil {
-		return err
-	}
-
-	matched, _, err := s.cfg.Passwords.Verify(string(storedHash), req.CurrentPassword)
-	if err != nil {
-		return fmt.Errorf("verify current password: %w", err)
-	}
-	if !matched {
-		return ErrInvalidCredentials
-	}
-
-	newHash, err := s.cfg.Passwords.Hash(req.NewPassword)
-	if err != nil {
-		return fmt.Errorf("hash new password: %w", err)
-	}
-	if err := s.cfg.Credentials.SetPasswordHash(ctx, user.ID, []byte(newHash)); err != nil {
-		return err
-	}
-
-	now := s.cfg.Clock.Now()
-	if err := s.cfg.Sessions.RevokeUserSessions(ctx, user.ID, now); err != nil {
-		return err
-	}
-	if err := s.cfg.Tokens.RevokeTokenFamily(ctx, user.ID, now); err != nil {
-		return err
-	}
-	return s.recordAudit(ctx, AuditEventPasswordChanged, user.ID, user.ID, "", "")
-}
-
-func (s *Service) createSessionAndRefreshToken(ctx context.Context, userID string, familyID string) (Session, string, Token, error) {
-	now := s.cfg.Clock.Now()
-
-	sessionID, err := token.GenerateSessionID()
-	if err != nil {
-		return Session{}, "", Token{}, fmt.Errorf("generate session id: %w", err)
-	}
-	session := Session{
-		ID:        sessionID,
-		UserID:    userID,
-		CreatedAt: now,
-		ExpiresAt: now.Add(s.cfg.SessionTTL),
-	}
-	if err := s.cfg.Sessions.CreateSession(ctx, session); err != nil {
-		return Session{}, "", Token{}, err
-	}
-
-	refreshToken, refreshRecord, err := s.newRefreshTokenRecord(userID, familyID, now)
-	if err != nil {
-		return Session{}, "", Token{}, err
-	}
-	if err := s.cfg.Tokens.CreateToken(ctx, refreshRecord); err != nil {
-		return Session{}, "", Token{}, err
-	}
-
-	return session, refreshToken, refreshRecord, nil
-}
-
-func (s *Service) newRefreshTokenRecord(userID string, familyID string, now time.Time) (string, Token, error) {
-	raw, err := token.GenerateRefreshToken()
-	if err != nil {
-		return "", Token{}, fmt.Errorf("generate refresh token: %w", err)
-	}
-	hash, err := token.LookupHash(raw)
-	if err != nil {
-		return "", Token{}, err
-	}
-	tokenID, err := token.GenerateSessionID()
-	if err != nil {
-		return "", Token{}, fmt.Errorf("generate token id: %w", err)
-	}
-	if familyID == "" {
-		familyID = userID
-	}
-	if familyID == "" {
-		familyID, err = token.GenerateSessionID()
-		if err != nil {
-			return "", Token{}, fmt.Errorf("generate token family id: %w", err)
-		}
-	}
-
-	return raw, Token{
-		ID:        tokenID,
-		FamilyID:  familyID,
-		Subject:   userID,
+	apiKey := APIKey{
+		ID:        keyID,
 		Issuer:    s.cfg.Issuer,
+		Prefix:    prefix,
+		Name:      strings.TrimSpace(req.Name),
+		OwnerType: principal.Type,
+		OwnerID:   principal.ID,
 		Hash:      hash,
-		IssuedAt:  now,
-		ExpiresAt: now.Add(s.cfg.RefreshTokenTTL),
-	}, nil
+		Scopes:    normalizeScopes(req.Scopes),
+		CreatedAt: now,
+		ExpiresAt: expiresAt,
+	}
+	if err := s.cfg.APIKeys.CreateAPIKey(ctx, apiKey); err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+	if err := s.recordAudit(ctx, AuditEventAPIKeyCreated, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil); err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+
+	return CreateAPIKeyResult{APIKey: apiKey, RawKey: rawKey}, nil
 }
 
-func (s *Service) recordAudit(ctx context.Context, eventType AuditEventType, actorID string, subjectID string, sessionID string, tokenID string) error {
+// VerifyAPIKey verifies a raw API key and checks required scopes.
+func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (VerifyAPIKeyResult, error) {
+	rawKey := strings.TrimSpace(req.RawKey)
+	if rawKey == "" {
+		return VerifyAPIKeyResult{}, ErrInvalidRequest
+	}
+	if err := s.requireStores(s.cfg.Principals, s.cfg.APIKeys); err != nil {
+		return VerifyAPIKeyResult{}, err
+	}
+
+	prefix, err := parseAPIKeyPrefix(rawKey, s.cfg.KeyPrefix)
+	if err != nil {
+		_ = s.recordAudit(ctx, AuditEventAPIKeyVerificationFailed, "", "", "", "", nil)
+		return VerifyAPIKeyResult{}, ErrInvalidCredentials
+	}
+
+	apiKey, err := s.cfg.APIKeys.GetAPIKeyByPrefix(ctx, prefix)
+	if errors.Is(err, ErrNotFound) {
+		_ = s.recordAudit(ctx, AuditEventAPIKeyVerificationFailed, "", "", "", "", map[string]string{"prefix": prefix})
+		return VerifyAPIKeyResult{}, ErrInvalidCredentials
+	}
+	if err != nil {
+		return VerifyAPIKeyResult{}, err
+	}
+
+	hash, err := token.LookupHash(rawKey)
+	if err != nil {
+		return VerifyAPIKeyResult{}, err
+	}
+	if subtle.ConstantTimeCompare(hash, apiKey.Hash) != 1 {
+		_ = s.recordAudit(ctx, AuditEventAPIKeyVerificationFailed, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, map[string]string{"prefix": prefix})
+		return VerifyAPIKeyResult{}, ErrInvalidCredentials
+	}
+
+	now := s.cfg.Clock.Now()
+	if apiKey.Issuer != s.cfg.Issuer || !apiKey.IsActive(now) {
+		_ = s.recordAudit(ctx, AuditEventAPIKeyVerificationFailed, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, map[string]string{"prefix": prefix})
+		return VerifyAPIKeyResult{}, ErrInvalidCredentials
+	}
+	if !hasRequiredScopes(apiKey.Scopes, req.RequiredScopes) {
+		return VerifyAPIKeyResult{}, ErrPermissionDenied
+	}
+
+	principal, err := s.cfg.Principals.GetPrincipal(ctx, apiKey.OwnerType, apiKey.OwnerID)
+	if errors.Is(err, ErrNotFound) {
+		return VerifyAPIKeyResult{}, ErrInvalidCredentials
+	}
+	if err != nil {
+		return VerifyAPIKeyResult{}, err
+	}
+	if principal.IsDisabled() {
+		return VerifyAPIKeyResult{}, ErrDisabledPrincipal
+	}
+
+	if err := s.cfg.APIKeys.TouchAPIKey(ctx, apiKey.ID, now); err != nil {
+		return VerifyAPIKeyResult{}, err
+	}
+	apiKey.LastUsedAt = &now
+	if err := s.recordAudit(ctx, AuditEventAPIKeyVerified, principal.ID, apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil); err != nil {
+		return VerifyAPIKeyResult{}, err
+	}
+
+	return VerifyAPIKeyResult{APIKey: apiKey, Principal: principal}, nil
+}
+
+// RevokeAPIKey revokes an API key by ID.
+func (s *Service) RevokeAPIKey(ctx context.Context, req RevokeAPIKeyRequest) error {
+	keyID := strings.TrimSpace(req.APIKeyID)
+	if keyID == "" {
+		return ErrInvalidRequest
+	}
+	if err := s.requireStores(s.cfg.APIKeys); err != nil {
+		return err
+	}
+
+	apiKey, err := s.cfg.APIKeys.GetAPIKeyByID(ctx, keyID)
+	if err != nil {
+		return err
+	}
+
+	now := s.cfg.Clock.Now()
+	if err := s.cfg.APIKeys.RevokeAPIKey(ctx, keyID, now); err != nil {
+		return err
+	}
+	return s.recordAudit(ctx, AuditEventAPIKeyRevoked, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
+}
+
+// ListAPIKeys lists API keys for a user or group.
+func (s *Service) ListAPIKeys(ctx context.Context, req ListAPIKeysRequest) ([]APIKey, error) {
+	if err := validatePrincipalRef(req.OwnerType, req.OwnerID); err != nil {
+		return nil, err
+	}
+	if err := s.requireStores(s.cfg.APIKeys); err != nil {
+		return nil, err
+	}
+	return s.cfg.APIKeys.ListAPIKeys(ctx, req.OwnerType, strings.TrimSpace(req.OwnerID))
+}
+
+func (s *Service) recordAudit(ctx context.Context, eventType AuditEventType, actorID string, principalType PrincipalType, principalID string, apiKeyID string, metadata map[string]string) error {
 	if s.cfg.Audit == nil {
 		return nil
 	}
 
-	eventID, err := token.GenerateSessionID()
+	eventID, err := token.GeneratePublicID()
 	if err != nil {
 		return fmt.Errorf("generate audit event id: %w", err)
 	}
 	return s.cfg.Audit.RecordAuditEvent(ctx, AuditEvent{
-		ID:        eventID,
-		Type:      eventType,
-		ActorID:   actorID,
-		SubjectID: subjectID,
-		SessionID: sessionID,
-		TokenID:   tokenID,
-		Occurred:  s.cfg.Clock.Now(),
+		ID:            eventID,
+		Type:          eventType,
+		ActorID:       actorID,
+		PrincipalType: principalType,
+		PrincipalID:   principalID,
+		APIKeyID:      apiKeyID,
+		Occurred:      s.cfg.Clock.Now(),
+		Metadata:      metadata,
 	})
 }
 
@@ -396,6 +251,63 @@ func (s *Service) requireStores(stores ...interface{}) error {
 	return nil
 }
 
-func normalizeEmail(email string) string {
-	return strings.ToLower(strings.TrimSpace(email))
+func validatePrincipalRef(principalType PrincipalType, principalID string) error {
+	if strings.TrimSpace(principalID) == "" {
+		return ErrInvalidRequest
+	}
+	switch principalType {
+	case PrincipalTypeUser, PrincipalTypeGroup:
+		return nil
+	default:
+		return ErrInvalidRequest
+	}
+}
+
+func parseAPIKeyPrefix(rawKey string, keyPrefix string) (string, error) {
+	prefix, secret, ok := strings.Cut(rawKey, ".")
+	if !ok || prefix == "" || secret == "" {
+		return "", ErrInvalidRequest
+	}
+	if !strings.HasPrefix(prefix, keyPrefix+"_") {
+		return "", ErrInvalidRequest
+	}
+	return prefix, nil
+}
+
+func normalizeScopes(scopes []string) []string {
+	if len(scopes) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(scopes))
+	normalized := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			continue
+		}
+		if _, ok := seen[scope]; ok {
+			continue
+		}
+		seen[scope] = struct{}{}
+		normalized = append(normalized, scope)
+	}
+	return normalized
+}
+
+func hasRequiredScopes(granted []string, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+
+	grantedSet := make(map[string]struct{}, len(granted))
+	for _, scope := range granted {
+		grantedSet[scope] = struct{}{}
+	}
+	for _, scope := range normalizeScopes(required) {
+		if _, ok := grantedSet[scope]; !ok {
+			return false
+		}
+	}
+	return true
 }
