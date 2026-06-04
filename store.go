@@ -26,9 +26,10 @@ type APIKeyStore interface {
 	// GetAPIKeyByPrefix returns ErrNotFound when prefix does not exist.
 	GetAPIKeyByPrefix(ctx context.Context, prefix string) (APIKey, error)
 
-	// ListAPIKeys returns keys for a principal. It returns an empty slice when
-	// the principal has no keys.
-	ListAPIKeys(ctx context.Context, ownerType PrincipalType, ownerID string) ([]APIKey, error)
+	// ListAPIKeys returns keys for a principal in a stable deterministic order.
+	// It returns an empty page when the principal has no keys. Cursor values are
+	// opaque and store-defined.
+	ListAPIKeys(ctx context.Context, ownerType PrincipalType, ownerID string, page PageRequest) (Page[APIKey], error)
 
 	// RevokeAPIKey returns ErrNotFound when keyID does not exist and
 	// ErrInvalidState when the key cannot be revoked.

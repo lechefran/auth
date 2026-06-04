@@ -25,8 +25,8 @@ func (compileAPIKeyStore) GetAPIKeyByPrefix(context.Context, string) (APIKey, er
 	return APIKey{}, nil
 }
 
-func (compileAPIKeyStore) ListAPIKeys(context.Context, PrincipalType, string) ([]APIKey, error) {
-	return nil, nil
+func (compileAPIKeyStore) ListAPIKeys(context.Context, PrincipalType, string, PageRequest) (Page[APIKey], error) {
+	return Page[APIKey]{}, nil
 }
 
 func (compileAPIKeyStore) RevokeAPIKey(context.Context, string, time.Time) error {

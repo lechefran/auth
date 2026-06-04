@@ -143,14 +143,19 @@ func (s *memoryStore) GetAPIKeyByPrefix(_ context.Context, prefix string) (auth.
 	return s.GetAPIKeyByID(context.Background(), keyID)
 }
 
-func (s *memoryStore) ListAPIKeys(_ context.Context, ownerType auth.PrincipalType, ownerID string) ([]auth.APIKey, error) {
+func (s *memoryStore) ListAPIKeys(_ context.Context, ownerType auth.PrincipalType, ownerID string, page auth.PageRequest) (auth.Page[auth.APIKey], error) {
 	var keys []auth.APIKey
 	for _, key := range s.apiKeys {
 		if key.OwnerType == ownerType && key.OwnerID == ownerID {
 			keys = append(keys, key)
 		}
 	}
-	return keys, nil
+
+	end := page.Limit
+	if end > len(keys) {
+		end = len(keys)
+	}
+	return auth.Page[auth.APIKey]{Items: keys[:end]}, nil
 }
 
 func (s *memoryStore) RevokeAPIKey(_ context.Context, keyID string, revokedAt time.Time) error {

@@ -57,6 +57,7 @@ type RevokeAPIKeyRequest struct {
 type ListAPIKeysRequest struct {
 	OwnerType PrincipalType
 	OwnerID   string
+	Page      PageRequest
 }
 
 // CreateAPIKey creates a new API key for a user or group.
@@ -227,21 +228,28 @@ func (s *Service) RevokeAPIKey(ctx context.Context, req RevokeAPIKeyRequest) err
 }
 
 // ListAPIKeys lists API keys for a user or group.
-func (s *Service) ListAPIKeys(ctx context.Context, req ListAPIKeysRequest) ([]APIKey, error) {
+func (s *Service) ListAPIKeys(ctx context.Context, req ListAPIKeysRequest) (Page[APIKey], error) {
 	if err := validatePrincipalRef(req.OwnerType, req.OwnerID); err != nil {
-		return nil, err
+		return Page[APIKey]{}, err
+	}
+	pageReq, err := normalizePageRequest(req.Page)
+	if err != nil {
+		return Page[APIKey]{}, err
 	}
 	if err := s.requireStores(s.cfg.APIKeys); err != nil {
-		return nil, err
+		return Page[APIKey]{}, err
 	}
-	keys, err := s.cfg.APIKeys.ListAPIKeys(ctx, req.OwnerType, strings.TrimSpace(req.OwnerID))
+	page, err := s.cfg.APIKeys.ListAPIKeys(ctx, req.OwnerType, strings.TrimSpace(req.OwnerID), pageReq)
 	if err != nil {
-		return nil, err
+		return Page[APIKey]{}, err
 	}
-	for i := range keys {
-		keys[i] = publicAPIKey(keys[i])
+	if !isValidCursor(page.NextCursor) {
+		return Page[APIKey]{}, ErrInvalidState
 	}
-	return keys, nil
+	for i := range page.Items {
+		page.Items[i] = publicAPIKey(page.Items[i])
+	}
+	return page, nil
 }
 
 func (s *Service) recordAudit(ctx context.Context, eventType AuditEventType, actorID string, principalType PrincipalType, principalID string, apiKeyID string, metadata map[string]string) error {

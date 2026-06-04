@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -387,19 +390,126 @@ func TestListAPIKeysReturnsOwnerKeys(t *testing.T) {
 		t.Fatalf("CreateAPIKey() error = %v", err)
 	}
 
-	keys, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+	page, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
 		OwnerType: PrincipalTypeUser,
 		OwnerID:   "user_123",
 	})
 	if err != nil {
 		t.Fatalf("ListAPIKeys() error = %v", err)
 	}
-	if len(keys) != 2 {
-		t.Fatalf("ListAPIKeys() returned %d keys, want 2", len(keys))
+	if len(page.Items) != 2 {
+		t.Fatalf("ListAPIKeys() returned %d keys, want 2", len(page.Items))
 	}
-	for _, key := range keys {
+	for _, key := range page.Items {
 		if key.Hash != nil {
 			t.Fatal("ListAPIKeys() exposed lookup hash")
+		}
+	}
+}
+
+func TestListAPIKeysPaginatesWithLimitAndCursor(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+	for i := 0; i < 5; i++ {
+		if _, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+			OwnerType: PrincipalTypeUser,
+			OwnerID:   "user_123",
+			Name:      fmt.Sprintf("key-%d", i),
+		}); err != nil {
+			t.Fatalf("CreateAPIKey() error = %v", err)
+		}
+	}
+
+	first, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Page:      PageRequest{Limit: 2},
+	})
+	if err != nil {
+		t.Fatalf("ListAPIKeys(first) error = %v", err)
+	}
+	if len(first.Items) != 2 {
+		t.Fatalf("first page length = %d, want 2", len(first.Items))
+	}
+	if !first.HasMore() {
+		t.Fatal("first page HasMore() = false, want true")
+	}
+
+	second, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Page:      PageRequest{Limit: 2, Cursor: first.NextCursor},
+	})
+	if err != nil {
+		t.Fatalf("ListAPIKeys(second) error = %v", err)
+	}
+	if len(second.Items) != 2 {
+		t.Fatalf("second page length = %d, want 2", len(second.Items))
+	}
+	if !second.HasMore() {
+		t.Fatal("second page HasMore() = false, want true")
+	}
+
+	third, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Page:      PageRequest{Limit: 2, Cursor: second.NextCursor},
+	})
+	if err != nil {
+		t.Fatalf("ListAPIKeys(third) error = %v", err)
+	}
+	if len(third.Items) != 1 {
+		t.Fatalf("third page length = %d, want 1", len(third.Items))
+	}
+	if third.HasMore() {
+		t.Fatal("third page HasMore() = true, want false")
+	}
+}
+
+func TestListAPIKeysAppliesDefaultAndMaxLimit(t *testing.T) {
+	t.Parallel()
+
+	service, store := newTestService(t)
+	if _, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	}); err != nil {
+		t.Fatalf("ListAPIKeys(default) error = %v", err)
+	}
+	if store.lastPage.Limit != DefaultPageLimit {
+		t.Fatalf("default limit = %d, want %d", store.lastPage.Limit, DefaultPageLimit)
+	}
+
+	if _, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Page:      PageRequest{Limit: MaxPageLimit + 1},
+	}); err != nil {
+		t.Fatalf("ListAPIKeys(max) error = %v", err)
+	}
+	if store.lastPage.Limit != MaxPageLimit {
+		t.Fatalf("max limit = %d, want %d", store.lastPage.Limit, MaxPageLimit)
+	}
+}
+
+func TestListAPIKeysRejectsInvalidPageRequest(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+
+	tests := []PageRequest{
+		{Limit: -1},
+		{Cursor: "bad cursor"},
+	}
+	for _, pageReq := range tests {
+		_, err := service.ListAPIKeys(context.Background(), ListAPIKeysRequest{
+			OwnerType: PrincipalTypeUser,
+			OwnerID:   "user_123",
+			Page:      pageReq,
+		})
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("ListAPIKeys(%+v) error = %v, want ErrInvalidRequest", pageReq, err)
 		}
 	}
 }
@@ -466,6 +576,7 @@ type memoryStore struct {
 	audit      []AuditEvent
 	auditErr   error
 	touchErr   error
+	lastPage   PageRequest
 }
 
 func newMemoryStore() *memoryStore {
@@ -512,14 +623,41 @@ func (s *memoryStore) GetAPIKeyByPrefix(_ context.Context, prefix string) (APIKe
 	return s.GetAPIKeyByID(context.Background(), keyID)
 }
 
-func (s *memoryStore) ListAPIKeys(_ context.Context, ownerType PrincipalType, ownerID string) ([]APIKey, error) {
+func (s *memoryStore) ListAPIKeys(_ context.Context, ownerType PrincipalType, ownerID string, page PageRequest) (Page[APIKey], error) {
+	s.lastPage = page
 	var keys []APIKey
 	for _, key := range s.apiKeys {
 		if key.OwnerType == ownerType && key.OwnerID == ownerID {
 			keys = append(keys, key)
 		}
 	}
-	return keys, nil
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].CreatedAt.Equal(keys[j].CreatedAt) {
+			return keys[i].ID < keys[j].ID
+		}
+		return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+	})
+
+	start := 0
+	if page.Cursor != "" {
+		parsed, err := strconv.Atoi(page.Cursor)
+		if err != nil || parsed < 0 || parsed > len(keys) {
+			return Page[APIKey]{}, ErrInvalidRequest
+		}
+		start = parsed
+	}
+
+	end := start + page.Limit
+	if end > len(keys) {
+		end = len(keys)
+	}
+	result := Page[APIKey]{
+		Items: append([]APIKey(nil), keys[start:end]...),
+	}
+	if end < len(keys) {
+		result.NextCursor = strconv.Itoa(end)
+	}
+	return result, nil
 }
 
 func (s *memoryStore) RevokeAPIKey(_ context.Context, keyID string, revokedAt time.Time) error {
