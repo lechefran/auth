@@ -77,6 +77,10 @@ func (compileTokenStore) RevokeToken(context.Context, string, time.Time) error {
 	return nil
 }
 
+func (compileTokenStore) RotateToken(context.Context, []byte, Token, time.Time) (Token, error) {
+	return Token{}, nil
+}
+
 func (compileTokenStore) RevokeTokenFamily(context.Context, string, time.Time) error {
 	return nil
 }

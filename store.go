@@ -78,6 +78,13 @@ type TokenStore interface {
 	// ErrInvalidState when the token cannot be revoked.
 	RevokeToken(ctx context.Context, tokenID string, revokedAt time.Time) error
 
+	// RotateToken atomically revokes the token identified by currentHash and
+	// stores replacement. It returns the previous token metadata. It returns
+	// ErrNotFound when currentHash does not exist, ErrInvalidState when the
+	// current token is revoked or expired at rotatedAt, and ErrAlreadyExists
+	// when the replacement token ID or hash already exists.
+	RotateToken(ctx context.Context, currentHash []byte, replacement Token, rotatedAt time.Time) (Token, error)
+
 	// RevokeTokenFamily revokes every token in a token family. It should be
 	// idempotent and return nil when the family has no active tokens.
 	RevokeTokenFamily(ctx context.Context, familyID string, revokedAt time.Time) error

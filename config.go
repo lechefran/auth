@@ -3,6 +3,8 @@ package auth
 import (
 	"errors"
 	"time"
+
+	"github.com/lechefran/auth/password"
 )
 
 var (
@@ -36,6 +38,10 @@ type Config struct {
 	// SessionTTL is the maximum lifetime for user sessions.
 	SessionTTL time.Duration
 
+	// Passwords hashes and verifies password credentials. Argon2id defaults are
+	// used when this is nil.
+	Passwords PasswordHasher
+
 	// Users stores account records.
 	Users UserStore
 
@@ -66,6 +72,9 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = defaultSessionTTL
 	}
+	if cfg.Passwords == nil {
+		cfg.Passwords = password.Argon2id()
+	}
 	return cfg
 }
 
@@ -84,6 +93,9 @@ func validateConfig(cfg Config) error {
 	}
 	if cfg.SessionTTL <= 0 {
 		return errors.Join(ErrInvalidConfig, errors.New("session ttl must be positive"))
+	}
+	if cfg.Passwords == nil {
+		return errors.Join(ErrInvalidConfig, errors.New("password hasher is required"))
 	}
 	if cfg.AccessTokenTTL >= cfg.RefreshTokenTTL {
 		return errors.Join(ErrInvalidConfig, errors.New("access token ttl must be shorter than refresh token ttl"))

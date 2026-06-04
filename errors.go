@@ -16,4 +16,18 @@ var (
 	// ErrInvalidState reports that a requested transition is not allowed for the
 	// current resource state, such as revoking an already-revoked token.
 	ErrInvalidState = errors.New("auth: invalid state")
+
+	// ErrInvalidRequest reports malformed or incomplete caller input.
+	ErrInvalidRequest = errors.New("auth: invalid request")
+
+	// ErrInvalidCredentials reports failed authentication without revealing
+	// whether an account, password, session, or token was the failing factor.
+	ErrInvalidCredentials = errors.New("auth: invalid credentials")
+
+	// ErrDisabledUser reports that an otherwise valid account is disabled.
+	ErrDisabledUser = errors.New("auth: disabled user")
+
+	// ErrMissingStore reports that a workflow was called without the required
+	// storage dependency configured.
+	ErrMissingStore = errors.New("auth: missing store")
 )
