@@ -132,9 +132,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (Cr
 	if err := s.cfg.APIKeys.CreateAPIKey(ctx, apiKey); err != nil {
 		return CreateAPIKeyResult{}, err
 	}
-	if err := s.recordAudit(ctx, AuditEventAPIKeyCreated, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil); err != nil {
-		return CreateAPIKeyResult{}, err
-	}
+	_ = s.recordAudit(ctx, AuditEventAPIKeyCreated, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
 
 	return CreateAPIKeyResult{APIKey: publicAPIKey(apiKey), RawKey: rawKey}, nil
 }
@@ -201,9 +199,7 @@ func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (Ve
 		return VerifyAPIKeyResult{}, err
 	}
 	apiKey.LastUsedAt = &now
-	if err := s.recordAudit(ctx, AuditEventAPIKeyVerified, principal.ID, apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil); err != nil {
-		return VerifyAPIKeyResult{}, err
-	}
+	_ = s.recordAudit(ctx, AuditEventAPIKeyVerified, principal.ID, apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
 
 	return VerifyAPIKeyResult{APIKey: publicAPIKey(apiKey), Principal: principal}, nil
 }
@@ -227,7 +223,8 @@ func (s *Service) RevokeAPIKey(ctx context.Context, req RevokeAPIKeyRequest) err
 	if err := s.cfg.APIKeys.RevokeAPIKey(ctx, keyID, now); err != nil {
 		return err
 	}
-	return s.recordAudit(ctx, AuditEventAPIKeyRevoked, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
+	_ = s.recordAudit(ctx, AuditEventAPIKeyRevoked, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
+	return nil
 }
 
 // ListAPIKeys lists API keys for a user or group.

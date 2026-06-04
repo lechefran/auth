@@ -76,6 +76,27 @@ func TestCreateAPIKeyRejectsMalformedScopes(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKeyReturnsRawKeyWhenAuditFails(t *testing.T) {
+	t.Parallel()
+
+	service, store := newTestService(t)
+	store.auditErr = errors.New("audit unavailable")
+
+	result, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	if result.RawKey == "" {
+		t.Fatal("CreateAPIKey() returned empty raw key")
+	}
+	if _, ok := store.apiKeys[result.APIKey.ID]; !ok {
+		t.Fatal("CreateAPIKey() did not store API key")
+	}
+}
+
 func TestCreateAPIKeyRejectsMissingPrincipal(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +187,31 @@ func TestVerifyAPIKeyRejectsMalformedRequiredScopes(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("VerifyAPIKey() error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestVerifyAPIKeySucceedsWhenAuditFails(t *testing.T) {
+	t.Parallel()
+
+	service, store := newTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	store.auditErr = errors.New("audit unavailable")
+	verified, err := service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{RawKey: created.RawKey})
+	if err != nil {
+		t.Fatalf("VerifyAPIKey() error = %v", err)
+	}
+	if verified.APIKey.ID != created.APIKey.ID {
+		t.Fatalf("VerifyAPIKey() ID = %q, want %q", verified.APIKey.ID, created.APIKey.ID)
+	}
+	if store.apiKeys[created.APIKey.ID].LastUsedAt == nil {
+		t.Fatal("VerifyAPIKey() did not touch key")
 	}
 }
 
@@ -276,6 +322,27 @@ func TestRevokeAPIKeyRevokesStoredKey(t *testing.T) {
 	}
 }
 
+func TestRevokeAPIKeySucceedsWhenAuditFails(t *testing.T) {
+	t.Parallel()
+
+	service, store := newTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	store.auditErr = errors.New("audit unavailable")
+	if err := service.RevokeAPIKey(context.Background(), RevokeAPIKeyRequest{APIKeyID: created.APIKey.ID}); err != nil {
+		t.Fatalf("RevokeAPIKey() error = %v", err)
+	}
+	if store.apiKeys[created.APIKey.ID].RevokedAt == nil {
+		t.Fatal("RevokeAPIKey() did not revoke key")
+	}
+}
+
 func TestListAPIKeysReturnsOwnerKeys(t *testing.T) {
 	t.Parallel()
 
@@ -372,6 +439,7 @@ type memoryStore struct {
 	apiKeys    map[string]APIKey
 	byPrefix   map[string]string
 	audit      []AuditEvent
+	auditErr   error
 }
 
 func newMemoryStore() *memoryStore {
@@ -452,6 +520,9 @@ func (s *memoryStore) TouchAPIKey(_ context.Context, keyID string, usedAt time.T
 }
 
 func (s *memoryStore) RecordAuditEvent(_ context.Context, event AuditEvent) error {
+	if s.auditErr != nil {
+		return s.auditErr
+	}
 	s.audit = append(s.audit, event)
 	return nil
 }
