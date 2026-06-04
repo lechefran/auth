@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -130,10 +131,20 @@ func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (Cr
 		CreatedAt: now,
 		ExpiresAt: expiresAt,
 	}
-	if err := s.cfg.APIKeys.CreateAPIKey(ctx, apiKey); err != nil {
-		return CreateAPIKeyResult{}, err
+	if atomicStore := s.atomicAPIKeyAuditStore(); atomicStore != nil {
+		event, err := s.newAuditEvent(AuditEventAPIKeyCreated, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
+		if err != nil {
+			return CreateAPIKeyResult{}, err
+		}
+		if err := atomicStore.CreateAPIKeyWithAudit(ctx, apiKey, event); err != nil {
+			return CreateAPIKeyResult{}, err
+		}
+	} else {
+		if err := s.cfg.APIKeys.CreateAPIKey(ctx, apiKey); err != nil {
+			return CreateAPIKeyResult{}, err
+		}
+		_ = s.recordAudit(ctx, AuditEventAPIKeyCreated, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
 	}
-	_ = s.recordAudit(ctx, AuditEventAPIKeyCreated, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
 
 	return CreateAPIKeyResult{APIKey: publicAPIKey(apiKey), RawKey: rawKey}, nil
 }
@@ -221,10 +232,20 @@ func (s *Service) RevokeAPIKey(ctx context.Context, req RevokeAPIKeyRequest) err
 	}
 
 	now := s.cfg.Clock.Now()
-	if err := s.cfg.APIKeys.RevokeAPIKey(ctx, keyID, now); err != nil {
-		return err
+	if atomicStore := s.atomicAPIKeyAuditStore(); atomicStore != nil {
+		event, err := s.newAuditEvent(AuditEventAPIKeyRevoked, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
+		if err != nil {
+			return err
+		}
+		if err := atomicStore.RevokeAPIKeyWithAudit(ctx, keyID, now, event); err != nil {
+			return err
+		}
+	} else {
+		if err := s.cfg.APIKeys.RevokeAPIKey(ctx, keyID, now); err != nil {
+			return err
+		}
+		_ = s.recordAudit(ctx, AuditEventAPIKeyRevoked, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
 	}
-	_ = s.recordAudit(ctx, AuditEventAPIKeyRevoked, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
 	return nil
 }
 
@@ -258,11 +279,19 @@ func (s *Service) recordAudit(ctx context.Context, eventType AuditEventType, act
 		return nil
 	}
 
+	event, err := s.newAuditEvent(eventType, actorID, principalType, principalID, apiKeyID, metadata)
+	if err != nil {
+		return err
+	}
+	return s.cfg.Audit.RecordAuditEvent(ctx, event)
+}
+
+func (s *Service) newAuditEvent(eventType AuditEventType, actorID string, principalType PrincipalType, principalID string, apiKeyID string, metadata map[string]string) (AuditEvent, error) {
 	eventID, err := token.GeneratePublicID()
 	if err != nil {
-		return fmt.Errorf("generate audit event id: %w", err)
+		return AuditEvent{}, fmt.Errorf("generate audit event id: %w", err)
 	}
-	return s.cfg.Audit.RecordAuditEvent(ctx, AuditEvent{
+	return AuditEvent{
 		ID:            eventID,
 		Type:          eventType,
 		ActorID:       actorID,
@@ -271,7 +300,30 @@ func (s *Service) recordAudit(ctx context.Context, eventType AuditEventType, act
 		APIKeyID:      apiKeyID,
 		Occurred:      s.cfg.Clock.Now(),
 		Metadata:      metadata,
-	})
+	}, nil
+}
+
+func (s *Service) atomicAPIKeyAuditStore() AtomicAPIKeyAuditStore {
+	if s.cfg.Audit == nil {
+		return nil
+	}
+	store, ok := s.cfg.APIKeys.(AtomicAPIKeyAuditStore)
+	if !ok || !sameStore(s.cfg.APIKeys, s.cfg.Audit) {
+		return nil
+	}
+	return store
+}
+
+func sameStore(left interface{}, right interface{}) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	leftValue := reflect.ValueOf(left)
+	rightValue := reflect.ValueOf(right)
+	if leftValue.Type() != rightValue.Type() || !leftValue.Type().Comparable() {
+		return false
+	}
+	return leftValue.Interface() == rightValue.Interface()
 }
 
 func (s *Service) requireStores(stores ...interface{}) error {

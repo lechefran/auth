@@ -101,12 +101,33 @@ func (s *Store) GetPrincipal(ctx context.Context, principalType auth.PrincipalTy
 
 // CreateAPIKey stores API key metadata.
 func (s *Store) CreateAPIKey(ctx context.Context, key auth.APIKey) error {
+	return createAPIKey(ctx, s.db, key)
+}
+
+// CreateAPIKeyWithAudit stores API key metadata and its audit event atomically.
+func (s *Store) CreateAPIKeyWithAudit(ctx context.Context, key auth.APIKey, event auth.AuditEvent) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := createAPIKey(ctx, tx, key); err != nil {
+		return err
+	}
+	if err := recordAuditEvent(ctx, tx, event); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func createAPIKey(ctx context.Context, runner sqlRunner, key auth.APIKey) error {
 	scopes, err := encodeScopes(key.Scopes)
 	if err != nil {
 		return err
 	}
 
-	_, err = s.db.ExecContext(
+	_, err = runner.ExecContext(
 		ctx,
 		`INSERT INTO auth_api_keys(
 			id, issuer, prefix, name, owner_type, owner_id, hash, scopes,
@@ -196,7 +217,28 @@ func (s *Store) ListAPIKeys(ctx context.Context, ownerType auth.PrincipalType, o
 
 // RevokeAPIKey marks an API key as revoked.
 func (s *Store) RevokeAPIKey(ctx context.Context, keyID string, revokedAt time.Time) error {
-	result, err := s.db.ExecContext(
+	return revokeAPIKey(ctx, s.db, keyID, revokedAt)
+}
+
+// RevokeAPIKeyWithAudit revokes an API key and stores its audit event atomically.
+func (s *Store) RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event auth.AuditEvent) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := revokeAPIKey(ctx, tx, keyID, revokedAt); err != nil {
+		return err
+	}
+	if err := recordAuditEvent(ctx, tx, event); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func revokeAPIKey(ctx context.Context, runner sqlRunner, keyID string, revokedAt time.Time) error {
+	result, err := runner.ExecContext(
 		ctx,
 		`UPDATE auth_api_keys
 		 SET revoked_at = ?
@@ -215,7 +257,7 @@ func (s *Store) RevokeAPIKey(ctx context.Context, keyID string, revokedAt time.T
 		return nil
 	}
 
-	key, err := s.GetAPIKeyByID(ctx, keyID)
+	key, err := getAPIKey(ctx, runner, `WHERE id = ?`, keyID)
 	if errors.Is(err, auth.ErrNotFound) {
 		return auth.ErrNotFound
 	}
@@ -251,11 +293,15 @@ func (s *Store) TouchAPIKey(ctx context.Context, keyID string, usedAt time.Time)
 
 // RecordAuditEvent stores an audit event.
 func (s *Store) RecordAuditEvent(ctx context.Context, event auth.AuditEvent) error {
+	return recordAuditEvent(ctx, s.db, event)
+}
+
+func recordAuditEvent(ctx context.Context, runner sqlRunner, event auth.AuditEvent) error {
 	metadata, err := encodeMetadata(event.Metadata)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(
+	_, err = runner.ExecContext(
 		ctx,
 		`INSERT INTO auth_audit_events(
 			id, type, actor_id, principal_type, principal_id, api_key_id, occurred, metadata
@@ -273,11 +319,20 @@ func (s *Store) RecordAuditEvent(ctx context.Context, event auth.AuditEvent) err
 }
 
 func (s *Store) getAPIKey(ctx context.Context, where string, args ...any) (auth.APIKey, error) {
+	return getAPIKey(ctx, s.db, where, args...)
+}
+
+func getAPIKey(ctx context.Context, runner sqlRunner, where string, args ...any) (auth.APIKey, error) {
 	query := `SELECT id, issuer, prefix, name, owner_type, owner_id, hash, scopes,
 			created_at, expires_at, revoked_at, last_used_at
 		FROM auth_api_keys ` + where
-	row := s.db.QueryRowContext(ctx, query, args...)
+	row := runner.QueryRowContext(ctx, query, args...)
 	return scanAPIKey(row)
+}
+
+type sqlRunner interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 type scanner interface {

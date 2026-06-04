@@ -13,10 +13,11 @@ import (
 )
 
 var (
-	_ auth.PrincipalStore = (*Store)(nil)
-	_ auth.APIKeyStore    = (*Store)(nil)
-	_ auth.AuditStore     = (*Store)(nil)
-	_ migrate.Driver      = (*MigrationDriver)(nil)
+	_ auth.PrincipalStore         = (*Store)(nil)
+	_ auth.APIKeyStore            = (*Store)(nil)
+	_ auth.AuditStore             = (*Store)(nil)
+	_ auth.AtomicAPIKeyAuditStore = (*Store)(nil)
+	_ migrate.Driver              = (*MigrationDriver)(nil)
 )
 
 func TestMigrateIsIdempotent(t *testing.T) {
@@ -216,6 +217,27 @@ func TestCreateAPIKeyRejectsDuplicateAndMissingPrincipal(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKeyWithAuditRollsBackWhenAuditFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newMigratedStore(t, ctx)
+	createPrincipal(t, ctx, store, auth.PrincipalTypeUser, "user_123")
+	existingEvent := testAuditEvent("event_1", "existing_key")
+	if err := store.RecordAuditEvent(ctx, existingEvent); err != nil {
+		t.Fatalf("RecordAuditEvent() error = %v", err)
+	}
+
+	key := testAPIKey("key_1", "ak_one", auth.PrincipalTypeUser, "user_123", fixedTime())
+	event := testAuditEvent("event_1", key.ID)
+	if err := store.CreateAPIKeyWithAudit(ctx, key, event); !errors.Is(err, auth.ErrAlreadyExists) {
+		t.Fatalf("CreateAPIKeyWithAudit() error = %v, want ErrAlreadyExists", err)
+	}
+	if _, err := store.GetAPIKeyByID(ctx, key.ID); !errors.Is(err, auth.ErrNotFound) {
+		t.Fatalf("GetAPIKeyByID() after rollback error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestListAPIKeysPaginates(t *testing.T) {
 	t.Parallel()
 
@@ -337,6 +359,34 @@ func TestRevokeAndTouchAPIKey(t *testing.T) {
 	}
 	if err := store.TouchAPIKey(ctx, "missing", usedAt); !errors.Is(err, auth.ErrNotFound) {
 		t.Fatalf("TouchAPIKey() missing error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRevokeAPIKeyWithAuditRollsBackWhenAuditFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newMigratedStore(t, ctx)
+	createPrincipal(t, ctx, store, auth.PrincipalTypeUser, "user_123")
+	key := testAPIKey("key_1", "ak_one", auth.PrincipalTypeUser, "user_123", fixedTime())
+	if err := store.CreateAPIKey(ctx, key); err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	existingEvent := testAuditEvent("event_1", "existing_key")
+	if err := store.RecordAuditEvent(ctx, existingEvent); err != nil {
+		t.Fatalf("RecordAuditEvent() error = %v", err)
+	}
+
+	event := testAuditEvent("event_1", key.ID)
+	if err := store.RevokeAPIKeyWithAudit(ctx, key.ID, fixedTime().Add(time.Hour), event); !errors.Is(err, auth.ErrAlreadyExists) {
+		t.Fatalf("RevokeAPIKeyWithAudit() error = %v, want ErrAlreadyExists", err)
+	}
+	got, err := store.GetAPIKeyByID(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeyByID() error = %v", err)
+	}
+	if got.RevokedAt != nil {
+		t.Fatal("RevokeAPIKeyWithAudit() left key revoked after rollback")
 	}
 }
 
@@ -468,6 +518,19 @@ func testAPIKey(id string, prefix string, ownerType auth.PrincipalType, ownerID 
 		Scopes:    []string{"cards:read", "cards:write"},
 		CreatedAt: createdAt,
 		ExpiresAt: &expiresAt,
+	}
+}
+
+func testAuditEvent(id string, keyID string) auth.AuditEvent {
+	return auth.AuditEvent{
+		ID:            id,
+		Type:          auth.AuditEventAPIKeyCreated,
+		ActorID:       "actor_1",
+		PrincipalType: auth.PrincipalTypeUser,
+		PrincipalID:   "user_123",
+		APIKeyID:      keyID,
+		Occurred:      fixedTime(),
+		Metadata:      map[string]string{"reason": "test"},
 	}
 }
 

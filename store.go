@@ -47,3 +47,18 @@ type AuditStore interface {
 	// the event ID is already present.
 	RecordAuditEvent(ctx context.Context, event AuditEvent) error
 }
+
+// AtomicAPIKeyAuditStore optionally persists API key mutations and their audit
+// event in one store-owned atomic operation.
+//
+// Store adapters that can provide transactions should implement this interface
+// when their APIKeyStore and AuditStore data live in the same database.
+type AtomicAPIKeyAuditStore interface {
+	// CreateAPIKeyWithAudit stores key metadata and its creation audit event in
+	// one atomic operation.
+	CreateAPIKeyWithAudit(ctx context.Context, key APIKey, event AuditEvent) error
+
+	// RevokeAPIKeyWithAudit revokes an API key and stores its revocation audit
+	// event in one atomic operation.
+	RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event AuditEvent) error
+}

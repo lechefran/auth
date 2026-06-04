@@ -100,6 +100,27 @@ func TestCreateAPIKeyReturnsRawKeyWhenAuditFails(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKeyRollsBackWhenAtomicAuditFails(t *testing.T) {
+	t.Parallel()
+
+	service, store := newAtomicTestService(t)
+	store.auditErr = errors.New("audit unavailable")
+
+	_, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err == nil {
+		t.Fatal("CreateAPIKey() returned nil error")
+	}
+	if len(store.apiKeys) != 0 {
+		t.Fatalf("stored keys = %d, want 0", len(store.apiKeys))
+	}
+	if store.atomicCreates != 1 {
+		t.Fatalf("atomic creates = %d, want 1", store.atomicCreates)
+	}
+}
+
 func TestCreateAPIKeyRejectsMissingPrincipal(t *testing.T) {
 	t.Parallel()
 
@@ -386,6 +407,31 @@ func TestRevokeAPIKeySucceedsWhenAuditFails(t *testing.T) {
 	}
 }
 
+func TestRevokeAPIKeyRollsBackWhenAtomicAuditFails(t *testing.T) {
+	t.Parallel()
+
+	service, store := newAtomicTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	store.auditErr = errors.New("audit unavailable")
+	err = service.RevokeAPIKey(context.Background(), RevokeAPIKeyRequest{APIKeyID: created.APIKey.ID})
+	if err == nil {
+		t.Fatal("RevokeAPIKey() returned nil error")
+	}
+	if store.apiKeys[created.APIKey.ID].RevokedAt != nil {
+		t.Fatal("RevokeAPIKey() revoked key after atomic audit failure")
+	}
+	if store.atomicRevokes != 1 {
+		t.Fatalf("atomic revokes = %d, want 1", store.atomicRevokes)
+	}
+}
+
 func TestListAPIKeysReturnsOwnerKeys(t *testing.T) {
 	t.Parallel()
 
@@ -580,6 +626,16 @@ func newTestService(t *testing.T) (*Service, *memoryStore) {
 	return service, store
 }
 
+func newAtomicTestService(t *testing.T) (*Service, *atomicMemoryStore) {
+	t.Helper()
+
+	service, store := newTestService(t)
+	atomicStore := &atomicMemoryStore{memoryStore: store}
+	service.cfg.APIKeys = atomicStore
+	service.cfg.Audit = atomicStore
+	return service, atomicStore
+}
+
 func testLookupKey() []byte {
 	return []byte("01234567890123456789012345678901")
 }
@@ -717,6 +773,41 @@ func (s *memoryStore) auditCount(eventType AuditEventType) int {
 		}
 	}
 	return count
+}
+
+type atomicMemoryStore struct {
+	*memoryStore
+	atomicCreates int
+	atomicRevokes int
+}
+
+func (s *atomicMemoryStore) CreateAPIKeyWithAudit(ctx context.Context, key APIKey, event AuditEvent) error {
+	s.atomicCreates++
+	if err := s.CreateAPIKey(ctx, key); err != nil {
+		return err
+	}
+	if err := s.RecordAuditEvent(ctx, event); err != nil {
+		delete(s.byPrefix, key.Prefix)
+		delete(s.apiKeys, key.ID)
+		return err
+	}
+	return nil
+}
+
+func (s *atomicMemoryStore) RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event AuditEvent) error {
+	s.atomicRevokes++
+	previous, ok := s.apiKeys[keyID]
+	if !ok {
+		return ErrNotFound
+	}
+	if err := s.RevokeAPIKey(ctx, keyID, revokedAt); err != nil {
+		return err
+	}
+	if err := s.RecordAuditEvent(ctx, event); err != nil {
+		s.apiKeys[keyID] = previous
+		return err
+	}
+	return nil
 }
 
 func principalKey(principalType PrincipalType, principalID string) string {
