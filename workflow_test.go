@@ -193,6 +193,21 @@ func TestVerifyAPIKeyRejectsMalformedRequiredScopes(t *testing.T) {
 	}
 }
 
+func TestVerifyAPIKeyAuditsInvalidRawKey(t *testing.T) {
+	t.Parallel()
+
+	service, store := newTestService(t)
+	_, err := service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{
+		RawKey: strings.Repeat("x", maxAPIKeyLength+1),
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("VerifyAPIKey() error = %v, want ErrInvalidRequest", err)
+	}
+	if store.auditCount(AuditEventAPIKeyVerificationFailed) != 1 {
+		t.Fatal("VerifyAPIKey() did not audit oversized raw key")
+	}
+}
+
 func TestVerifyAPIKeySucceedsWhenAuditFails(t *testing.T) {
 	t.Parallel()
 

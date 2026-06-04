@@ -142,6 +142,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (Cr
 func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (VerifyAPIKeyResult, error) {
 	rawKey := strings.TrimSpace(req.RawKey)
 	if rawKey == "" || len(rawKey) > maxAPIKeyLength {
+		_ = s.recordAudit(ctx, AuditEventAPIKeyVerificationFailed, "", "", "", "", nil)
 		return VerifyAPIKeyResult{}, ErrInvalidRequest
 	}
 	requiredScopes, err := normalizeScopes(req.RequiredScopes)
