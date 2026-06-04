@@ -14,6 +14,7 @@ var (
 const (
 	defaultAPIKeyTTL = 90 * 24 * time.Hour
 	defaultKeyPrefix = "ak"
+	maxKeyPrefixLen  = 32
 )
 
 // Config controls the core authentication service.
@@ -68,20 +69,14 @@ func validateConfig(cfg Config) error {
 	if cfg.KeyPrefix == "" {
 		return errors.Join(ErrInvalidConfig, errors.New("key prefix is required"))
 	}
-	if containsKeyDelimiter(cfg.KeyPrefix) {
-		return errors.Join(ErrInvalidConfig, errors.New("key prefix contains a reserved delimiter"))
+	if len(cfg.KeyPrefix) > maxKeyPrefixLen {
+		return errors.Join(ErrInvalidConfig, errors.New("key prefix is too long"))
+	}
+	if !isKeyPrefixPart(cfg.KeyPrefix) {
+		return errors.Join(ErrInvalidConfig, errors.New("key prefix contains invalid characters"))
 	}
 	if cfg.APIKeyTTL <= 0 {
 		return errors.Join(ErrInvalidConfig, errors.New("api key ttl must be positive"))
 	}
 	return nil
-}
-
-func containsKeyDelimiter(value string) bool {
-	for _, r := range value {
-		if r == '_' || r == '.' || r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			return true
-		}
-	}
-	return false
 }

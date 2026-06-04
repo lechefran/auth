@@ -29,7 +29,14 @@ func TestCreateAPIKeyStoresHashAndReturnsRawKeyOnce(t *testing.T) {
 	if !strings.HasPrefix(result.RawKey, result.APIKey.Prefix+".") {
 		t.Fatalf("RawKey = %q, want prefix %q", result.RawKey, result.APIKey.Prefix+".")
 	}
-	if bytes.Contains(result.APIKey.Hash, []byte(result.RawKey)) {
+	if result.APIKey.Hash != nil {
+		t.Fatal("CreateAPIKey() exposed lookup hash")
+	}
+	stored := store.apiKeys[result.APIKey.ID]
+	if len(stored.Hash) == 0 {
+		t.Fatal("CreateAPIKey() did not store lookup hash")
+	}
+	if bytes.Contains(stored.Hash, []byte(result.RawKey)) {
 		t.Fatal("stored hash contains raw key material")
 	}
 	if len(result.APIKey.Scopes) != 2 {
@@ -43,6 +50,20 @@ func TestCreateAPIKeyStoresHashAndReturnsRawKeyOnce(t *testing.T) {
 	}
 	if store.auditCount(AuditEventAPIKeyCreated) != 1 {
 		t.Fatal("CreateAPIKey() did not record audit event")
+	}
+}
+
+func TestCreateAPIKeyRejectsMalformedScopes(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+	_, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Scopes:    []string{"cards:read", " "},
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("CreateAPIKey() error = %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -109,8 +130,33 @@ func TestVerifyAPIKeyReturnsPrincipalAndTouchesKey(t *testing.T) {
 	if verified.APIKey.LastUsedAt == nil {
 		t.Fatal("VerifyAPIKey() did not touch key")
 	}
+	if verified.APIKey.Hash != nil {
+		t.Fatal("VerifyAPIKey() exposed lookup hash")
+	}
 	if store.auditCount(AuditEventAPIKeyVerified) != 1 {
 		t.Fatal("VerifyAPIKey() did not record audit event")
+	}
+}
+
+func TestVerifyAPIKeyRejectsMalformedRequiredScopes(t *testing.T) {
+	t.Parallel()
+
+	service, _ := newTestService(t)
+	created, err := service.CreateAPIKey(context.Background(), CreateAPIKeyRequest{
+		OwnerType: PrincipalTypeUser,
+		OwnerID:   "user_123",
+		Scopes:    []string{"cards:read"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	_, err = service.VerifyAPIKey(context.Background(), VerifyAPIKeyRequest{
+		RawKey:         created.RawKey,
+		RequiredScopes: []string{" "},
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("VerifyAPIKey() error = %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -249,6 +295,11 @@ func TestListAPIKeysReturnsOwnerKeys(t *testing.T) {
 	}
 	if len(keys) != 2 {
 		t.Fatalf("ListAPIKeys() returned %d keys, want 2", len(keys))
+	}
+	for _, key := range keys {
+		if key.Hash != nil {
+			t.Fatal("ListAPIKeys() exposed lookup hash")
+		}
 	}
 }
 

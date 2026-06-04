@@ -11,6 +11,14 @@ import (
 	"github.com/lechefran/auth/token"
 )
 
+const (
+	maxAPIKeyLength = 256
+	maxNameLength   = 128
+	maxOwnerIDLen   = 256
+	maxScopes       = 64
+	maxScopeLength  = 128
+)
+
 // CreateAPIKeyRequest contains metadata for a new API key.
 type CreateAPIKeyRequest struct {
 	OwnerType PrincipalType
@@ -54,6 +62,14 @@ type ListAPIKeysRequest struct {
 // CreateAPIKey creates a new API key for a user or group.
 func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (CreateAPIKeyResult, error) {
 	if err := validatePrincipalRef(req.OwnerType, req.OwnerID); err != nil {
+		return CreateAPIKeyResult{}, err
+	}
+	name := strings.TrimSpace(req.Name)
+	if len(name) > maxNameLength {
+		return CreateAPIKeyResult{}, ErrInvalidRequest
+	}
+	scopes, err := normalizeScopes(req.Scopes)
+	if err != nil {
 		return CreateAPIKeyResult{}, err
 	}
 	if err := s.requireStores(s.cfg.Principals, s.cfg.APIKeys); err != nil {
@@ -105,11 +121,11 @@ func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (Cr
 		ID:        keyID,
 		Issuer:    s.cfg.Issuer,
 		Prefix:    prefix,
-		Name:      strings.TrimSpace(req.Name),
+		Name:      name,
 		OwnerType: principal.Type,
 		OwnerID:   principal.ID,
 		Hash:      hash,
-		Scopes:    normalizeScopes(req.Scopes),
+		Scopes:    scopes,
 		CreatedAt: now,
 		ExpiresAt: expiresAt,
 	}
@@ -120,13 +136,17 @@ func (s *Service) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest) (Cr
 		return CreateAPIKeyResult{}, err
 	}
 
-	return CreateAPIKeyResult{APIKey: apiKey, RawKey: rawKey}, nil
+	return CreateAPIKeyResult{APIKey: publicAPIKey(apiKey), RawKey: rawKey}, nil
 }
 
 // VerifyAPIKey verifies a raw API key and checks required scopes.
 func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (VerifyAPIKeyResult, error) {
 	rawKey := strings.TrimSpace(req.RawKey)
-	if rawKey == "" {
+	if rawKey == "" || len(rawKey) > maxAPIKeyLength {
+		return VerifyAPIKeyResult{}, ErrInvalidRequest
+	}
+	requiredScopes, err := normalizeScopes(req.RequiredScopes)
+	if err != nil {
 		return VerifyAPIKeyResult{}, ErrInvalidRequest
 	}
 	if err := s.requireStores(s.cfg.Principals, s.cfg.APIKeys); err != nil {
@@ -162,7 +182,7 @@ func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (Ve
 		_ = s.recordAudit(ctx, AuditEventAPIKeyVerificationFailed, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, map[string]string{"prefix": prefix})
 		return VerifyAPIKeyResult{}, ErrInvalidCredentials
 	}
-	if !hasRequiredScopes(apiKey.Scopes, req.RequiredScopes) {
+	if !hasRequiredScopes(apiKey.Scopes, requiredScopes) {
 		return VerifyAPIKeyResult{}, ErrPermissionDenied
 	}
 
@@ -185,7 +205,7 @@ func (s *Service) VerifyAPIKey(ctx context.Context, req VerifyAPIKeyRequest) (Ve
 		return VerifyAPIKeyResult{}, err
 	}
 
-	return VerifyAPIKeyResult{APIKey: apiKey, Principal: principal}, nil
+	return VerifyAPIKeyResult{APIKey: publicAPIKey(apiKey), Principal: principal}, nil
 }
 
 // RevokeAPIKey revokes an API key by ID.
@@ -218,7 +238,14 @@ func (s *Service) ListAPIKeys(ctx context.Context, req ListAPIKeysRequest) ([]AP
 	if err := s.requireStores(s.cfg.APIKeys); err != nil {
 		return nil, err
 	}
-	return s.cfg.APIKeys.ListAPIKeys(ctx, req.OwnerType, strings.TrimSpace(req.OwnerID))
+	keys, err := s.cfg.APIKeys.ListAPIKeys(ctx, req.OwnerType, strings.TrimSpace(req.OwnerID))
+	if err != nil {
+		return nil, err
+	}
+	for i := range keys {
+		keys[i] = publicAPIKey(keys[i])
+	}
+	return keys, nil
 }
 
 func (s *Service) recordAudit(ctx context.Context, eventType AuditEventType, actorID string, principalType PrincipalType, principalID string, apiKeyID string, metadata map[string]string) error {
@@ -252,7 +279,8 @@ func (s *Service) requireStores(stores ...interface{}) error {
 }
 
 func validatePrincipalRef(principalType PrincipalType, principalID string) error {
-	if strings.TrimSpace(principalID) == "" {
+	principalID = strings.TrimSpace(principalID)
+	if principalID == "" || len(principalID) > maxOwnerIDLen {
 		return ErrInvalidRequest
 	}
 	switch principalType {
@@ -271,20 +299,27 @@ func parseAPIKeyPrefix(rawKey string, keyPrefix string) (string, error) {
 	if !strings.HasPrefix(prefix, keyPrefix+"_") {
 		return "", ErrInvalidRequest
 	}
+	publicID := strings.TrimPrefix(prefix, keyPrefix+"_")
+	if !isOpaqueTokenPart(publicID) || !isOpaqueTokenPart(secret) {
+		return "", ErrInvalidRequest
+	}
 	return prefix, nil
 }
 
-func normalizeScopes(scopes []string) []string {
+func normalizeScopes(scopes []string) ([]string, error) {
 	if len(scopes) == 0 {
-		return nil
+		return nil, nil
+	}
+	if len(scopes) > maxScopes {
+		return nil, ErrInvalidRequest
 	}
 
 	seen := make(map[string]struct{}, len(scopes))
 	normalized := make([]string, 0, len(scopes))
 	for _, scope := range scopes {
 		scope = strings.TrimSpace(scope)
-		if scope == "" {
-			continue
+		if !isValidScope(scope) {
+			return nil, ErrInvalidRequest
 		}
 		if _, ok := seen[scope]; ok {
 			continue
@@ -292,7 +327,7 @@ func normalizeScopes(scopes []string) []string {
 		seen[scope] = struct{}{}
 		normalized = append(normalized, scope)
 	}
-	return normalized
+	return normalized, nil
 }
 
 func hasRequiredScopes(granted []string, required []string) bool {
@@ -304,8 +339,60 @@ func hasRequiredScopes(granted []string, required []string) bool {
 	for _, scope := range granted {
 		grantedSet[scope] = struct{}{}
 	}
-	for _, scope := range normalizeScopes(required) {
+	for _, scope := range required {
 		if _, ok := grantedSet[scope]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func publicAPIKey(key APIKey) APIKey {
+	key.Hash = nil
+	key.Scopes = append([]string(nil), key.Scopes...)
+	return key
+}
+
+func isValidScope(scope string) bool {
+	if scope == "" || len(scope) > maxScopeLength {
+		return false
+	}
+	for _, r := range scope {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func isKeyPrefixPart(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isOpaqueTokenPart(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
 			return false
 		}
 	}
