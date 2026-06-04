@@ -426,7 +426,7 @@ func TestRevokeAPIKeyWithAuditRollsBackWhenAuditFails(t *testing.T) {
 	}
 
 	event := testAuditEvent("event_1", key.ID)
-	if err := store.RevokeAPIKeyWithAudit(ctx, key.ID, fixedTime().Add(time.Hour), event); !errors.Is(err, auth.ErrAlreadyExists) {
+	if _, err := store.RevokeAPIKeyWithAudit(ctx, key.ID, fixedTime().Add(time.Hour), event); !errors.Is(err, auth.ErrAlreadyExists) {
 		t.Fatalf("RevokeAPIKeyWithAudit() error = %v, want ErrAlreadyExists", err)
 	}
 	got, err := store.GetAPIKeyByID(ctx, key.ID)
@@ -435,6 +435,35 @@ func TestRevokeAPIKeyWithAuditRollsBackWhenAuditFails(t *testing.T) {
 	}
 	if got.RevokedAt != nil {
 		t.Fatal("RevokeAPIKeyWithAudit() left key revoked after rollback")
+	}
+}
+
+func TestRevokeAPIKeyWithAuditReturnsRevokedKeyMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newMigratedStore(t, ctx)
+	createPrincipal(t, ctx, store, auth.PrincipalTypeUser, "user_123")
+	key := testAPIKey("key_1", "ak_one", auth.PrincipalTypeUser, "user_123", fixedTime())
+	if err := store.CreateAPIKey(ctx, key); err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	revokedAt := fixedTime().Add(time.Hour)
+	event := auth.AuditEvent{
+		ID:       "event_1",
+		Type:     auth.AuditEventAPIKeyRevoked,
+		Occurred: fixedTime(),
+	}
+	revoked, err := store.RevokeAPIKeyWithAudit(ctx, key.ID, revokedAt, event)
+	if err != nil {
+		t.Fatalf("RevokeAPIKeyWithAudit() error = %v", err)
+	}
+	if revoked.ID != key.ID || revoked.OwnerID != key.OwnerID || revoked.OwnerType != key.OwnerType {
+		t.Fatalf("revoked key = %+v, want original key owner metadata", revoked)
+	}
+	if revoked.RevokedAt == nil || !revoked.RevokedAt.Equal(revokedAt) {
+		t.Fatalf("RevokedAt = %v, want %v", revoked.RevokedAt, revokedAt)
 	}
 }
 

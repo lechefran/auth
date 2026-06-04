@@ -230,21 +230,20 @@ func (s *Service) RevokeAPIKey(ctx context.Context, req RevokeAPIKeyRequest) err
 		return err
 	}
 
-	apiKey, err := s.cfg.APIKeys.GetAPIKeyByID(ctx, keyID)
-	if err != nil {
-		return err
-	}
-
 	now := s.cfg.Clock.Now()
 	if atomicStore := s.atomicAPIKeyAuditStore(); atomicStore != nil {
-		event, err := s.newAuditEvent(AuditEventAPIKeyRevoked, "", apiKey.OwnerType, apiKey.OwnerID, apiKey.ID, nil)
+		event, err := s.newAuditEvent(AuditEventAPIKeyRevoked, "", "", "", "", nil)
 		if err != nil {
 			return err
 		}
-		if err := atomicStore.RevokeAPIKeyWithAudit(ctx, keyID, now, event); err != nil {
+		if _, err := atomicStore.RevokeAPIKeyWithAudit(ctx, keyID, now, event); err != nil {
 			return err
 		}
 	} else {
+		apiKey, err := s.cfg.APIKeys.GetAPIKeyByID(ctx, keyID)
+		if err != nil {
+			return err
+		}
 		if err := s.cfg.APIKeys.RevokeAPIKey(ctx, keyID, now); err != nil {
 			return err
 		}

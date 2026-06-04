@@ -220,21 +220,32 @@ func (s *Store) RevokeAPIKey(ctx context.Context, keyID string, revokedAt time.T
 	return revokeAPIKey(ctx, s.db, keyID, revokedAt)
 }
 
-// RevokeAPIKeyWithAudit revokes an API key and stores its audit event atomically.
-func (s *Store) RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event auth.AuditEvent) error {
+// RevokeAPIKeyWithAudit reads and revokes an API key, then stores its audit event atomically.
+func (s *Store) RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event auth.AuditEvent) (auth.APIKey, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return auth.APIKey{}, err
 	}
 	defer tx.Rollback()
 
+	key, err := getAPIKey(ctx, tx, `WHERE id = ?`, keyID)
+	if err != nil {
+		return auth.APIKey{}, err
+	}
+	event.APIKeyID = key.ID
+	event.PrincipalType = key.OwnerType
+	event.PrincipalID = key.OwnerID
 	if err := revokeAPIKey(ctx, tx, keyID, revokedAt); err != nil {
-		return err
+		return auth.APIKey{}, err
 	}
 	if err := recordAuditEvent(ctx, tx, event); err != nil {
-		return err
+		return auth.APIKey{}, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return auth.APIKey{}, err
+	}
+	key.RevokedAt = &revokedAt
+	return key, nil
 }
 
 func revokeAPIKey(ctx context.Context, runner sqlRunner, keyID string, revokedAt time.Time) error {

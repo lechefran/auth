@@ -58,7 +58,10 @@ type AtomicAPIKeyAuditStore interface {
 	// one atomic operation.
 	CreateAPIKeyWithAudit(ctx context.Context, key APIKey, event AuditEvent) error
 
-	// RevokeAPIKeyWithAudit revokes an API key and stores its revocation audit
-	// event in one atomic operation.
-	RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event AuditEvent) error
+	// RevokeAPIKeyWithAudit reads and revokes an API key, stores its revocation
+	// audit event, and returns the revoked key metadata in one atomic operation.
+	//
+	// Implementations should populate event API key and principal fields from
+	// the key read inside the atomic operation.
+	RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event AuditEvent) (APIKey, error)
 }

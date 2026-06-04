@@ -460,6 +460,9 @@ func TestRevokeAPIKeyRollsBackWhenAtomicAuditFails(t *testing.T) {
 	if store.apiKeys[created.APIKey.ID].RevokedAt != nil {
 		t.Fatal("RevokeAPIKey() revoked key after atomic audit failure")
 	}
+	if store.getAPIKeyByIDCalls != 0 {
+		t.Fatalf("GetAPIKeyByID calls = %d, want 0 on atomic path", store.getAPIKeyByIDCalls)
+	}
 	if store.atomicRevokes != 1 {
 		t.Fatalf("atomic revokes = %d, want 1", store.atomicRevokes)
 	}
@@ -702,13 +705,14 @@ func testLookupKey() []byte {
 }
 
 type memoryStore struct {
-	principals map[string]Principal
-	apiKeys    map[string]APIKey
-	byPrefix   map[string]string
-	audit      []AuditEvent
-	auditErr   error
-	touchErr   error
-	lastPage   PageRequest
+	principals         map[string]Principal
+	apiKeys            map[string]APIKey
+	byPrefix           map[string]string
+	audit              []AuditEvent
+	auditErr           error
+	touchErr           error
+	lastPage           PageRequest
+	getAPIKeyByIDCalls int
 }
 
 func newMemoryStore() *memoryStore {
@@ -740,6 +744,7 @@ func (s *memoryStore) CreateAPIKey(_ context.Context, key APIKey) error {
 }
 
 func (s *memoryStore) GetAPIKeyByID(_ context.Context, keyID string) (APIKey, error) {
+	s.getAPIKeyByIDCalls++
 	key, ok := s.apiKeys[keyID]
 	if !ok {
 		return APIKey{}, ErrNotFound
@@ -864,20 +869,24 @@ func (s *atomicMemoryStore) CreateAPIKeyWithAudit(ctx context.Context, key APIKe
 	return nil
 }
 
-func (s *atomicMemoryStore) RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event AuditEvent) error {
+func (s *atomicMemoryStore) RevokeAPIKeyWithAudit(ctx context.Context, keyID string, revokedAt time.Time, event AuditEvent) (APIKey, error) {
 	s.atomicRevokes++
 	previous, ok := s.apiKeys[keyID]
 	if !ok {
-		return ErrNotFound
+		return APIKey{}, ErrNotFound
 	}
 	if err := s.RevokeAPIKey(ctx, keyID, revokedAt); err != nil {
-		return err
+		return APIKey{}, err
 	}
+	event.APIKeyID = previous.ID
+	event.PrincipalType = previous.OwnerType
+	event.PrincipalID = previous.OwnerID
 	if err := s.RecordAuditEvent(ctx, event); err != nil {
 		s.apiKeys[keyID] = previous
-		return err
+		return APIKey{}, err
 	}
-	return nil
+	previous.RevokedAt = &revokedAt
+	return previous, nil
 }
 
 func principalKey(principalType PrincipalType, principalID string) string {
