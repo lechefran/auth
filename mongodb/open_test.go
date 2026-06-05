@@ -9,9 +9,7 @@ func TestOpenReturnsConnectionHandle(t *testing.T) {
 	t.Parallel()
 
 	var open func(context.Context, string, string) (*Connection, error) = Open
-	if open == nil {
-		t.Fatal("Open is nil")
-	}
+	_ = open
 }
 
 func TestOpenRejectsBlankDatabaseName(t *testing.T) {
