@@ -29,11 +29,20 @@ MongoDB stores plus Redis schema marker helpers.
 go get github.com/lechefran/auth
 ```
 
+## Integration Guides
+
+- [SQLite](docs/sqlite.md)
+- [PostgreSQL](docs/postgres.md)
+- [MySQL / MariaDB](docs/mysql.md)
+- [MongoDB](docs/mongodb.md)
+- [Redis support](docs/redis.md)
+
 ## Quick Start With SQLite
 
 SQLite, PostgreSQL, MySQL/MariaDB, and MongoDB are complete built-in store
-adapters. They implement principal, API key, audit, pagination, and atomic
-key/audit operations.
+adapters for principal, API key, audit, and pagination workflows. SQLite,
+PostgreSQL, MySQL/MariaDB, and MongoDB's explicit `TransactionalStore` support
+atomic key/audit operations.
 
 ```go
 package main
