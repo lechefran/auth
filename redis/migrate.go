@@ -19,10 +19,28 @@ const (
 
 	maxNamespaceLength = 128
 	scanBatchSize      = 500
+
+	defaultDrainEmptyPasses = 2
+	defaultDrainMaxPasses   = 10
 )
 
 // ErrInvalidNamespace reports a namespace that is unsafe for auth Redis keys.
 var ErrInvalidNamespace = errors.New("redis: invalid namespace")
+
+// ErrNamespaceNotDrained reports that Redis namespace deletion did not observe
+// an empty namespace within the configured pass limit.
+var ErrNamespaceNotDrained = errors.New("redis: namespace not drained")
+
+// DrainOptions controls repeated Redis namespace deletion passes.
+type DrainOptions struct {
+	// EmptyPasses is the number of consecutive full scan passes that must find
+	// no matching keys before deletion is considered complete. Defaults to 2.
+	EmptyPasses int
+
+	// MaxPasses is the maximum number of full scan passes before returning
+	// ErrNamespaceNotDrained. Defaults to 10.
+	MaxPasses int
+}
 
 // Migrations returns the Redis migrations for the auth adapter.
 //
@@ -58,6 +76,9 @@ func DeleteData(ctx context.Context, client *goredis.Client) error {
 //
 // This is intentionally separate from Migrate so namespace initialization stays
 // non-destructive unless callers explicitly choose to delete data.
+//
+// This function performs one bounded SCAN pass. If writers may still be adding
+// keys concurrently, use DrainNamespaceData after quiescing writers.
 func DeleteNamespaceData(ctx context.Context, client *goredis.Client, namespace string) error {
 	if client == nil {
 		return errors.New("redis: client is required")
@@ -67,20 +88,64 @@ func DeleteNamespaceData(ctx context.Context, client *goredis.Client, namespace 
 		return err
 	}
 
+	_, err = deleteNamespacePass(ctx, client, prefix)
+	return err
+}
+
+// DrainNamespaceData repeatedly deletes auth adapter data in namespace until a
+// configured number of consecutive scan passes observe no matching keys.
+//
+// This is intended for shutdown/reset workflows where callers can first
+// quiesce writers. MaxPasses prevents unbounded looping if writers continue to
+// create namespace keys during deletion.
+func DrainNamespaceData(ctx context.Context, client *goredis.Client, namespace string, options DrainOptions) error {
+	if client == nil {
+		return errors.New("redis: client is required")
+	}
+	prefix, err := keyPrefix(namespace)
+	if err != nil {
+		return err
+	}
+	options, err = normalizeDrainOptions(options)
+	if err != nil {
+		return err
+	}
+
+	emptyPasses := 0
+	for pass := 0; pass < options.MaxPasses; pass++ {
+		deleted, err := deleteNamespacePass(ctx, client, prefix)
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			emptyPasses++
+			if emptyPasses >= options.EmptyPasses {
+				return nil
+			}
+			continue
+		}
+		emptyPasses = 0
+	}
+	return ErrNamespaceNotDrained
+}
+
+func deleteNamespacePass(ctx context.Context, client *goredis.Client, prefix string) (int, error) {
+	deleted := 0
 	var cursor uint64
 	for {
 		keys, nextCursor, err := client.Scan(ctx, cursor, prefix+"*", scanBatchSize).Result()
 		if err != nil {
-			return fmt.Errorf("scan auth namespace: %w", err)
+			return 0, fmt.Errorf("scan auth namespace: %w", err)
 		}
 		if len(keys) > 0 {
 			if err := client.Unlink(ctx, keys...).Err(); err != nil {
-				return fmt.Errorf("delete auth namespace data: %w", err)
+				return 0, fmt.Errorf("delete auth namespace data: %w", err)
 			}
+			deleted += len(keys)
 		}
 		cursor = nextCursor
 		if cursor == 0 {
-			return nil
+			return deleted, nil
 		}
 	}
 }
@@ -192,6 +257,25 @@ func validateRedisMigration(migration migrate.Migration) error {
 		return errors.New("redis: unsupported migration operation")
 	}
 	return nil
+}
+
+func normalizeDrainOptions(options DrainOptions) (DrainOptions, error) {
+	if options.EmptyPasses == 0 {
+		options.EmptyPasses = defaultDrainEmptyPasses
+	}
+	if options.MaxPasses == 0 {
+		options.MaxPasses = defaultDrainMaxPasses
+	}
+	if options.EmptyPasses < 0 || options.MaxPasses < 0 {
+		return DrainOptions{}, errors.New("redis: drain options must be non-negative")
+	}
+	if options.EmptyPasses == 0 || options.MaxPasses == 0 {
+		return DrainOptions{}, errors.New("redis: drain options must be positive")
+	}
+	if options.EmptyPasses > options.MaxPasses {
+		return DrainOptions{}, errors.New("redis: empty passes cannot exceed max passes")
+	}
+	return options, nil
 }
 
 func migrationsKey(namespace string) (string, error) {

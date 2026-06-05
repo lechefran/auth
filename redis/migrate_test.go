@@ -84,6 +84,35 @@ func TestRedisKeysAreNamespaced(t *testing.T) {
 	}
 }
 
+func TestNormalizeDrainOptionsAppliesDefaults(t *testing.T) {
+	t.Parallel()
+
+	got, err := normalizeDrainOptions(DrainOptions{})
+	if err != nil {
+		t.Fatalf("normalizeDrainOptions() error = %v", err)
+	}
+	if got.EmptyPasses != defaultDrainEmptyPasses {
+		t.Fatalf("EmptyPasses = %d, want %d", got.EmptyPasses, defaultDrainEmptyPasses)
+	}
+	if got.MaxPasses != defaultDrainMaxPasses {
+		t.Fatalf("MaxPasses = %d, want %d", got.MaxPasses, defaultDrainMaxPasses)
+	}
+}
+
+func TestNormalizeDrainOptionsRejectsUnsafeValues(t *testing.T) {
+	t.Parallel()
+
+	for _, options := range []DrainOptions{
+		{EmptyPasses: -1, MaxPasses: 1},
+		{EmptyPasses: 1, MaxPasses: -1},
+		{EmptyPasses: 3, MaxPasses: 2},
+	} {
+		if _, err := normalizeDrainOptions(options); err == nil {
+			t.Fatalf("normalizeDrainOptions(%+v) returned nil error", options)
+		}
+	}
+}
+
 func TestMigrationRecordRoundTrip(t *testing.T) {
 	t.Parallel()
 
