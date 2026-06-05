@@ -6,8 +6,8 @@ while the package handles the security-sensitive workflow: API key generation,
 HMAC lookup hashing, expiration, revocation, scope checks, pagination, and audit
 events.
 
-The package currently includes a complete SQLite store plus migration helpers
-for SQLite, MySQL/MariaDB, PostgreSQL, Redis, and MongoDB.
+The package currently includes native SQLite and PostgreSQL stores plus schema
+helpers for MySQL/MariaDB, Redis, and MongoDB.
 
 ## Features
 
@@ -31,8 +31,8 @@ go get github.com/lechefran/auth
 
 ## Quick Start With SQLite
 
-SQLite is the first complete built-in store adapter. It implements principal,
-API key, audit, pagination, and atomic key/audit operations.
+SQLite and PostgreSQL are complete built-in store adapters. They implement
+principal, API key, audit, pagination, and atomic key/audit operations.
 
 ```go
 package main
@@ -327,11 +327,11 @@ Store implementation requirements:
   storage fails.
 - Keep cursor ordering stable and deterministic.
 
-## Migrations
+## Native Adapter Setup
 
-Migration helpers are non-destructive. They create missing tables, collections,
-indexes, or marker records only. Existing SQL schemas are compatibility-checked
-before migrations are recorded.
+Adapter setup helpers are non-destructive. They create missing tables,
+collections, indexes, or marker records only. Existing SQL schemas are
+compatibility-checked before migrations are recorded.
 
 ### SQLite
 
@@ -390,6 +390,16 @@ defer db.Close()
 if err := postgres.Migrate(ctx, db); err != nil {
 	return err
 }
+
+store := postgres.NewStore(db)
+
+service, err := auth.New(auth.Config{
+	Issuer:          "example-api",
+	APIKeyLookupKey: lookupKey,
+	Principals:      store,
+	APIKeys:         store,
+	Audit:           store,
+})
 ```
 
 Useful helpers:
@@ -397,6 +407,8 @@ Useful helpers:
 ```go
 err := postgres.ValidateSchema(ctx, db)
 err = postgres.DeleteData(ctx, db)
+// or:
+err = store.DeleteData(ctx)
 ```
 
 ### Redis

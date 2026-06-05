@@ -4,7 +4,7 @@
 // The service generates raw API keys, stores only HMAC-SHA-256 lookup hashes,
 // verifies credentials, checks required scopes, revokes keys, lists keys with
 // cursor pagination, and records structured audit events. Applications provide
-// storage through small interfaces, or use the included SQLite store.
+// storage through small interfaces, or use an included native store adapter.
 //
 // # Key generation and service setup
 //
@@ -135,8 +135,8 @@
 //
 // # PostgreSQL setup
 //
-// The PostgreSQL package currently provides migration, schema validation, open,
-// and explicit delete helpers.
+// PostgreSQL is a complete built-in store adapter. It implements PrincipalStore,
+// APIKeyStore, AuditStore, and AtomicAPIKeyAuditStore.
 //
 //	db, err := postgres.Open(ctx, dsn)
 //	if err != nil {
@@ -151,6 +151,16 @@
 //	if err := postgres.ValidateSchema(ctx, db); err != nil {
 //		return err
 //	}
+//
+//	store := postgres.NewStore(db)
+//
+//	service, err := auth.New(auth.Config{
+//		Issuer:          "example-api",
+//		APIKeyLookupKey: lookupKey,
+//		Principals:      store,
+//		APIKeys:         store,
+//		Audit:           store,
+//	})
 //
 // # Redis setup
 //

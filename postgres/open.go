@@ -1,4 +1,4 @@
-// Package postgres provides PostgreSQL migration helpers for auth stores.
+// Package postgres provides a native PostgreSQL adapter for auth stores.
 package postgres
 
 import (
