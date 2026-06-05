@@ -116,8 +116,8 @@
 //
 // # MySQL and MariaDB setup
 //
-// The MySQL/MariaDB package currently provides migration, schema validation,
-// open, and explicit delete helpers.
+// MySQL/MariaDB is a complete built-in store adapter. It implements
+// PrincipalStore, APIKeyStore, AuditStore, and AtomicAPIKeyAuditStore.
 //
 //	db, err := mysql.Open(ctx, dsn)
 //	if err != nil {
@@ -132,6 +132,16 @@
 //	if err := mysql.ValidateSchema(ctx, db); err != nil {
 //		return err
 //	}
+//
+//	store := mysql.NewStore(db)
+//
+//	service, err := auth.New(auth.Config{
+//		Issuer:          "example-api",
+//		APIKeyLookupKey: lookupKey,
+//		Principals:      store,
+//		APIKeys:         store,
+//		Audit:           store,
+//	})
 //
 // # PostgreSQL setup
 //

@@ -1,4 +1,4 @@
-// Package mysql provides MySQL and MariaDB migration helpers for auth stores.
+// Package mysql provides a native MySQL/MariaDB adapter for auth stores.
 package mysql
 
 import (

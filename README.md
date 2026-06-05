@@ -6,8 +6,8 @@ while the package handles the security-sensitive workflow: API key generation,
 HMAC lookup hashing, expiration, revocation, scope checks, pagination, and audit
 events.
 
-The package currently includes native SQLite and PostgreSQL stores plus schema
-helpers for MySQL/MariaDB, Redis, and MongoDB.
+The package currently includes native SQLite, PostgreSQL, and MySQL/MariaDB
+stores plus schema helpers for Redis and MongoDB.
 
 ## Features
 
@@ -31,8 +31,8 @@ go get github.com/lechefran/auth
 
 ## Quick Start With SQLite
 
-SQLite and PostgreSQL are complete built-in store adapters. They implement
-principal, API key, audit, pagination, and atomic key/audit operations.
+SQLite, PostgreSQL, and MySQL/MariaDB are complete built-in store adapters. They
+implement principal, API key, audit, pagination, and atomic key/audit operations.
 
 ```go
 package main
@@ -369,6 +369,16 @@ defer db.Close()
 if err := mysql.Migrate(ctx, db); err != nil {
 	return err
 }
+
+store := mysql.NewStore(db)
+
+service, err := auth.New(auth.Config{
+	Issuer:          "example-api",
+	APIKeyLookupKey: lookupKey,
+	Principals:      store,
+	APIKeys:         store,
+	Audit:           store,
+})
 ```
 
 Useful helpers:
@@ -376,6 +386,8 @@ Useful helpers:
 ```go
 err := mysql.ValidateSchema(ctx, db)
 err = mysql.DeleteData(ctx, db)
+// or:
+err = store.DeleteData(ctx)
 ```
 
 ### PostgreSQL
