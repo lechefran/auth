@@ -6,8 +6,8 @@ while the package handles the security-sensitive workflow: API key generation,
 HMAC lookup hashing, expiration, revocation, scope checks, pagination, and audit
 events.
 
-The package currently includes native SQLite, PostgreSQL, and MySQL/MariaDB
-stores plus schema helpers for Redis and MongoDB.
+The package currently includes native SQLite, PostgreSQL, MySQL/MariaDB, and
+MongoDB stores plus Redis schema marker helpers.
 
 ## Features
 
@@ -31,8 +31,9 @@ go get github.com/lechefran/auth
 
 ## Quick Start With SQLite
 
-SQLite, PostgreSQL, and MySQL/MariaDB are complete built-in store adapters. They
-implement principal, API key, audit, pagination, and atomic key/audit operations.
+SQLite, PostgreSQL, MySQL/MariaDB, and MongoDB are complete built-in store
+adapters. They implement principal, API key, audit, pagination, and atomic
+key/audit operations.
 
 ```go
 package main
@@ -463,9 +464,11 @@ keys continue to appear through the configured pass limit.
 
 ### MongoDB
 
-MongoDB migrations create indexes with simple collation for string identity
-indexes. MongoDB does not currently provide a full API key store adapter in this
-package.
+MongoDB is a native store adapter. Migrations create indexes with simple
+collation for string identity indexes. The default `mongodb.Store` uses normal
+writes with best-effort audit. Use `mongodb.TransactionalStore` when you want
+atomic create/revoke with audit and your MongoDB deployment supports
+transactions.
 
 ```go
 conn, err := mongodb.Open(ctx, uri, "auth")
@@ -478,14 +481,34 @@ if err := conn.Migrate(ctx); err != nil {
 	return err
 }
 
-db := conn.Database()
+store := conn.Store()
+
+service, err := auth.New(auth.Config{
+	Issuer:          "example-api",
+	APIKeyLookupKey: lookupKey,
+	Principals:      store,
+	APIKeys:         store,
+	Audit:           store,
+})
+```
+
+For transaction-backed audit:
+
+```go
+store := conn.TransactionalStore()
 ```
 
 If your application already owns the MongoDB client:
 
 ```go
 db := client.Database("auth")
-err := mongodb.Migrate(ctx, db)
+if err := mongodb.Migrate(ctx, db); err != nil {
+	return err
+}
+
+store := mongodb.NewStore(db)
+// or, on a replica set / sharded cluster:
+transactionalStore := mongodb.NewTransactionalStore(db)
 ```
 
 Clear auth data explicitly:

@@ -34,6 +34,12 @@ func TestConnectionNilMethodsAreSafe(t *testing.T) {
 	if connection.Database() != nil {
 		t.Fatal("nil connection returned database")
 	}
+	if connection.Store() != nil {
+		t.Fatal("nil connection returned store")
+	}
+	if connection.TransactionalStore() != nil {
+		t.Fatal("nil connection returned transactional store")
+	}
 	if err := connection.Close(context.Background()); err != nil {
 		t.Fatalf("nil connection Close() error = %v", err)
 	}

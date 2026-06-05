@@ -1,4 +1,4 @@
-// Package mongodb provides MongoDB migration helpers for auth stores.
+// Package mongodb provides a native MongoDB adapter for auth stores.
 package mongodb
 
 import (
@@ -31,6 +31,23 @@ func (c *Connection) Database() *mongo.Database {
 		return nil
 	}
 	return c.database
+}
+
+// Store returns a MongoDB auth store backed by the configured database.
+func (c *Connection) Store() *Store {
+	if c == nil {
+		return nil
+	}
+	return NewStore(c.database)
+}
+
+// TransactionalStore returns a MongoDB auth store with transaction-backed
+// key/audit operations.
+func (c *Connection) TransactionalStore() *TransactionalStore {
+	if c == nil {
+		return nil
+	}
+	return NewTransactionalStore(c.database)
 }
 
 // Close disconnects the underlying MongoDB client.

@@ -197,8 +197,9 @@
 //
 // # MongoDB setup
 //
-// MongoDB support currently covers index migrations, simple collation for string
-// identity indexes, a closeable connection helper, and explicit data deletion.
+// MongoDB is a complete built-in store adapter. The default Store implements
+// PrincipalStore, APIKeyStore, and AuditStore. Use TransactionalStore for atomic
+// key/audit operations on deployments that support MongoDB transactions.
 //
 //	conn, err := mongodb.Open(ctx, uri, "auth")
 //	if err != nil {
@@ -210,14 +211,31 @@
 //		return err
 //	}
 //
-//	db := conn.Database()
-//	_ = db
+//	store := conn.Store()
+//
+//	service, err := auth.New(auth.Config{
+//		Issuer:          "example-api",
+//		APIKeyLookupKey: lookupKey,
+//		Principals:      store,
+//		APIKeys:         store,
+//		Audit:           store,
+//	})
+//
+// For transaction-backed audit:
+//
+//	store := conn.TransactionalStore()
 //
 // If your application already owns the MongoDB client, pass its database handle
 // directly:
 //
 //	db := client.Database("auth")
-//	err := mongodb.Migrate(ctx, db)
+//	if err := mongodb.Migrate(ctx, db); err != nil {
+//		return err
+//	}
+//
+//	store := mongodb.NewStore(db)
+//	transactionalStore := mongodb.NewTransactionalStore(db)
+//	_ = transactionalStore
 //
 // # Custom stores
 //
